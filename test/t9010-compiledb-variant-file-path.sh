@@ -16,7 +16,7 @@
 # with this program; if not, write to the Free Software Foundation, Inc.,
 # 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
-# Test that compile_commands.json uses project-root-relative source paths
+# Test that compile_commands.json uses absolute source paths
 # even when generated for a variant build directory.
 
 . ./tup.sh
@@ -38,13 +38,23 @@ compiledb
 
 check_exist build/compile_commands.json
 
-if ! grep '"file": "foo\.c"' build/compile_commands.json > /dev/null; then
-	echo "Error: Expected project-root-relative top-level file path." 1>&2
+if ! grep "\"command\": \"gcc -c $PWD/foo\\.c -o $PWD/build/foo\\.o\"" build/compile_commands.json > /dev/null; then
+	echo "Error: Expected absolute top-level command path." 1>&2
 	exit 1
 fi
 
-if ! grep '"file": "sub/bar\.c"' build/compile_commands.json > /dev/null; then
-	echo "Error: Expected project-root-relative subdir file path." 1>&2
+if ! grep "\"command\": \"gcc -c $PWD/sub/bar\\.c -o $PWD/build/sub/bar\\.o\"" build/compile_commands.json > /dev/null; then
+	echo "Error: Expected absolute subdir command path." 1>&2
+	exit 1
+fi
+
+if ! grep "\"file\": \"$PWD/foo\\.c\"" build/compile_commands.json > /dev/null; then
+	echo "Error: Expected absolute top-level file path." 1>&2
+	exit 1
+fi
+
+if ! grep "\"file\": \"$PWD/sub/bar\\.c\"" build/compile_commands.json > /dev/null; then
+	echo "Error: Expected absolute subdir file path." 1>&2
 	exit 1
 fi
 

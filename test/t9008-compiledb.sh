@@ -42,14 +42,14 @@ touch sub/baz.c
 compiledb
 
 for i in foo bar; do
-	if ! grep "gcc -c $i\\.c -o $i\\.o" compile_commands.json > /dev/null; then
-		echo "Error: Expected gcc command in compile_commands.json" 1>&2
+	if ! grep "gcc -c $PWD/$i\\.c -o $PWD/$i\\.o" compile_commands.json > /dev/null; then
+		echo "Error: Expected absolute gcc command in compile_commands.json" 1>&2
 		exit 1
 	fi
 done
 
-if ! grep '"file": "sub/baz\.c"' compile_commands.json > /dev/null; then
-	echo "Error: Expected project-root-relative file path in compile_commands.json" 1>&2
+if ! grep "\"file\": \"$PWD/sub/baz\\.c\"" compile_commands.json > /dev/null; then
+	echo "Error: Expected absolute file path in compile_commands.json" 1>&2
 	exit 1
 fi
 

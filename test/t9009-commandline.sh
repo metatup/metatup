@@ -29,8 +29,8 @@ tup parse
 
 tup commandline foo.c > .metatup/output.txt
 
-if ! grep '"command": "gcc -c foo.c -o foo.o",' .metatup/output.txt > /dev/null; then
-	echo "Error: Expected gcc command in output." 1>&2
+if ! grep "\"command\": \"gcc -c $PWD/foo\\.c -o $PWD/foo\\.o\"," .metatup/output.txt > /dev/null; then
+	echo "Error: Expected absolute gcc command in output." 1>&2
 	exit 1
 fi
 

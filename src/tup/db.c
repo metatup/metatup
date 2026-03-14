@@ -39,6 +39,7 @@
 #include "timespan.h"
 #include "variant.h"
 #include "logging.h"
+#include "compat.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -7520,11 +7521,318 @@ static void print_json(FILE *f, const char *str, int len)
 	free(buf);
 }
 
+static int compiledb_path_flag_needs_separate_arg(const char *arg, int len)
+{
+	static const char *flags[] = {
+		"-I",
+		"-isystem",
+		"-iquote",
+		"-include",
+		"-imacros",
+		"-o",
+		"-MF",
+		"--sysroot",
+	};
+	unsigned int x;
+
+	for(x=0; x<ARRAY_SIZE(flags); x++) {
+		int flen = strlen(flags[x]);
+		if(len == flen && strncmp(arg, flags[x], flen) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int compiledb_path_flag_prefix(const char *arg, int len, int *prefix_len)
+{
+	static const char *prefixes[] = {
+		"-I",
+		"-isystem",
+		"-iquote",
+		"-include",
+		"-imacros",
+		"-o",
+		"-MF",
+		"--sysroot=",
+	};
+	unsigned int x;
+
+	for(x=0; x<ARRAY_SIZE(prefixes); x++) {
+		int plen = strlen(prefixes[x]);
+		if(len > plen && strncmp(arg, prefixes[x], plen) == 0) {
+			*prefix_len = plen;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int compiledb_has_path_extension(const char *arg, int len)
+{
+	static const char *exts[] = {
+		".c", ".cc", ".cp", ".cpp", ".cxx",
+		".m", ".mm", ".s", ".S", ".asm",
+		".h", ".hh", ".hpp", ".hxx",
+		".o", ".obj", ".a", ".so", ".dylib",
+		".d", ".pcm", ".pch",
+	};
+	unsigned int x;
+
+	for(x=0; x<ARRAY_SIZE(exts); x++) {
+		int extlen = strlen(exts[x]);
+		if(len > extlen && strcmp(arg + len - extlen, exts[x]) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+static int compiledb_token_looks_like_path(const char *arg, int len)
+{
+	if(len <= 0)
+		return 0;
+	if(is_full_path(arg))
+		return 0;
+	if(arg[0] == '-')
+		return 0;
+	if(arg[0] == '.' || strchr(arg, path_sep()) != NULL)
+		return 1;
+	return compiledb_has_path_extension(arg, len);
+}
+
+static int compiledb_canonicalize_path_simple(const char *path, char **out)
+{
+	int absolute = is_full_path(path);
+	char *copy;
+	char *saveptr = NULL;
+	char *tok;
+	char **parts = NULL;
+	int count = 0;
+	int cap = 0;
+	int i;
+	int len = absolute ? 1 : 0;
+
+	copy = strdup(path);
+	if(!copy) {
+		perror("strdup");
+		return -1;
+	}
+
+	for(tok = strtok_r(copy, "/", &saveptr); tok; tok = strtok_r(NULL, "/", &saveptr)) {
+		if(strcmp(tok, ".") == 0 || tok[0] == 0)
+			continue;
+		if(strcmp(tok, "..") == 0) {
+			if(count > 0 && strcmp(parts[count-1], "..") != 0) {
+				count--;
+				continue;
+			}
+			if(absolute)
+				continue;
+		}
+		if(count == cap) {
+			int newcap = cap ? cap * 2 : 8;
+			char **tmp = realloc(parts, sizeof(*parts) * newcap);
+			if(!tmp) {
+				perror("realloc");
+				free(parts);
+				free(copy);
+				return -1;
+			}
+			parts = tmp;
+			cap = newcap;
+		}
+		parts[count++] = tok;
+		len += strlen(tok) + ((absolute || count > 1) ? 1 : 0);
+	}
+
+	if(count == 0 && !absolute) {
+		*out = strdup(".");
+		free(parts);
+		free(copy);
+		if(!*out) {
+			perror("strdup");
+			return -1;
+		}
+		return 0;
+	}
+
+	*out = malloc(len + 1);
+	if(!*out) {
+		perror("malloc");
+		free(parts);
+		free(copy);
+		return -1;
+	}
+	len = 0;
+	if(absolute)
+		(*out)[len++] = '/';
+	for(i=0; i<count; i++) {
+		int plen = strlen(parts[i]);
+		if(i > 0)
+			(*out)[len++] = '/';
+		memcpy(*out + len, parts[i], plen);
+		len += plen;
+	}
+	if(len == 0 && absolute)
+		(*out)[len++] = '/';
+	(*out)[len] = 0;
+
+	free(parts);
+	free(copy);
+	return 0;
+}
+
+static int compiledb_append_absolute_path(struct estring *e, const char *base_dir,
+					  const char *path, int pathlen)
+{
+	char *joined;
+	char *canon = NULL;
+	int baselen = strlen(base_dir);
+
+	joined = malloc(baselen + pathlen + 2);
+	if(!joined) {
+		perror("malloc");
+		return -1;
+	}
+	snprintf(joined, baselen + pathlen + 2, "%s/%.*s", base_dir, pathlen, path);
+	if(compiledb_canonicalize_path_simple(joined, &canon) < 0) {
+		free(joined);
+		return -1;
+	}
+	if(estring_append(e, canon, strlen(canon)) < 0) {
+		free(joined);
+		free(canon);
+		return -1;
+	}
+	free(joined);
+	free(canon);
+	return 0;
+}
+
+static int compiledb_append_maybe_quoted_path(struct estring *e, const char *base_dir,
+					      const char *arg, int len)
+{
+	char quote = 0;
+
+	if(len >= 2 && (arg[0] == '\'' || arg[0] == '"') && arg[len-1] == arg[0]) {
+		quote = arg[0];
+		arg++;
+		len -= 2;
+	}
+	if(len <= 0 || is_full_path(arg))
+		return estring_append(e, quote ? arg-1 : arg, quote ? len+2 : len);
+	if(quote) {
+		if(estring_append(e, &quote, 1) < 0)
+			return -1;
+	}
+	if(compiledb_append_absolute_path(e, base_dir, arg, len) < 0)
+		return -1;
+	if(quote) {
+		if(estring_append(e, &quote, 1) < 0)
+			return -1;
+	}
+	return 0;
+}
+
+static int compiledb_rewrite_token(struct estring *e, const char *base_dir,
+				   const char *token, int len, int *next_is_path)
+{
+	char *arg;
+	int prefix_len;
+	int rc;
+
+	arg = strndup(token, len);
+	if(!arg) {
+		perror("strndup");
+		return -1;
+	}
+
+	if(*next_is_path) {
+		*next_is_path = 0;
+		rc = compiledb_append_maybe_quoted_path(e, base_dir, arg, len);
+		free(arg);
+		return rc;
+	}
+	if(compiledb_path_flag_needs_separate_arg(arg, len)) {
+		*next_is_path = 1;
+		rc = estring_append(e, arg, len);
+		free(arg);
+		return rc;
+	}
+	if(compiledb_path_flag_prefix(arg, len, &prefix_len)) {
+		if(estring_append(e, arg, prefix_len) < 0) {
+			free(arg);
+			return -1;
+		}
+		rc = compiledb_append_maybe_quoted_path(e, base_dir, arg + prefix_len, len - prefix_len);
+		free(arg);
+		return rc;
+	}
+	if(compiledb_token_looks_like_path(arg, len)) {
+		rc = compiledb_append_maybe_quoted_path(e, base_dir, arg, len);
+		free(arg);
+		return rc;
+	}
+	rc = estring_append(e, arg, len);
+	free(arg);
+	return rc;
+}
+
+static char *compiledb_rewrite_command(const char *cmd, const char *base_dir)
+{
+	struct estring e;
+	const char *s = cmd;
+	int next_is_path = 0;
+
+	if(estring_init(&e) < 0)
+		return NULL;
+	while(*s) {
+		const char *token;
+		char quote = 0;
+
+		while(*s && isspace(*s)) {
+			if(estring_append(&e, s, 1) < 0)
+				return NULL;
+			s++;
+		}
+		if(*s == 0)
+			break;
+		token = s;
+		while(*s) {
+			if(quote) {
+				if(*s == '\\' && s[1] != 0) {
+					s += 2;
+					continue;
+				}
+				if(*s == quote)
+					quote = 0;
+				s++;
+				continue;
+			}
+			if(*s == '\'' || *s == '"') {
+				quote = *s;
+				s++;
+				continue;
+			}
+			if(*s == '\\' && s[1] != 0) {
+				s += 2;
+				continue;
+			}
+			if(isspace(*s))
+				break;
+			s++;
+		}
+		if(compiledb_rewrite_token(&e, base_dir, token, s - token, &next_is_path) < 0)
+			return NULL;
+	}
+	return e.s;
+}
+
 static int print_compile_db(FILE *f, struct tup_entry *cmdtent, struct tup_entry *filetent)
 {
 	static int first_time = 1;
 	struct tup_entry *srctent = variant_tent_to_srctent(cmdtent->parent);
 	struct estring e;
+	char *command;
 
 	if(first_time) {
 		first_time = 0;
@@ -7542,14 +7850,26 @@ static int print_compile_db(FILE *f, struct tup_entry *cmdtent, struct tup_entry
 			return -1;
 	}
 	print_json(f, e.s, e.len);
+	command = compiledb_rewrite_command(cmdtent->name.s, e.s);
 	free(e.s);
+	if(!command)
+		return -1;
 	fprintf(f, "\",\n");
 	fprintf(f, "    \"command\": \"");
-	print_json(f, cmdtent->name.s, cmdtent->name.len);
+	print_json(f, command, strlen(command));
+	free(command);
 	fprintf(f, "\",\n");
 	fprintf(f, "    \"file\": \"");
-	if(get_relative_dir(f, NULL, DOT_DT, filetent->tnode.tupid) < 0)
-		return -1;
+	estring_init(&e);
+	estring_append(&e, get_tup_top(), get_tup_top_len());
+	if(filetent->tnode.tupid != DOT_DT) {
+		char filesep[1] = {path_sep()};
+		estring_append(&e, filesep, 1);
+		if(get_relative_dir(NULL, &e, DOT_DT, filetent->tnode.tupid) < 0)
+			return -1;
+	}
+	print_json(f, e.s, e.len);
+	free(e.s);
 	fprintf(f, "\"\n");
 	fprintf(f, "}");
 	/* Return 1 to indicate we successfully printed an entry */
