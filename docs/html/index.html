@@ -38,6 +38,16 @@ brew install tup
 <p>If you use <a href="http://www.macports.org/"/>MacPorts</a> install tup as:</p>
 <pre>sudo port install tup</pre>
 
+<h2>MetaTup</h2>
+<p>MetaTup adds a higher-level workflow on top of Tup. Define reusable components in <span class="filename">MetaTup.yaml</span>, generate a concrete <span class="filename">TupBuild.yaml</span> in a build directory with <span class="cmd">tup gen</span>, then run <span class="cmd">tup</span> as usual.</p>
+<pre>
+<span class="prompt">$</span> mkdir build
+<span class="prompt">$</span> cd build
+<span class="prompt">build$</span> tup gen app -P dev -B c/compiler=clang
+<span class="prompt">build$</span> tup
+</pre>
+<p>The generated <span class="filename">TupBuild.yaml</span> can include profile-selected arguments, component dependencies from other packages, and exported dist prefixes. See <span class="filename">metatup.1</span> for the full command reference.</p>
+
 <h2>Why tup?</h2>
 <p>You can use tup anywhere you would use another build system (like make, or any of its derivatives). One reason you would want to use tup is if you like to update things very quickly. For example, if you typically execute a build in a subdirectory because it takes too long to figure out what to do when you execute the build from the top, you might want to look into tup. Unfortunately, tup is so fast that your <a href="http://xkcd.com/303/">chair mounted jousting</a> might suffer. I apologize in advance if someone besmirches your honor and you are unable to properly defend yourself as a result.</p>
 

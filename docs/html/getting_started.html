@@ -8,3 +8,13 @@
   <li>Perform a build by running <span class="cmd">tup</span>. You can run this from anywhere in the source tree. This will always update the whole tree. You can't fake out tup by trying to build a part of your program if you run tup in a subdirectory or something. Don't even try. You can't win. Unless you want to update a single target at a time, like <span class="cmd">tup foo.o</span>, in which case tup will just build that. But, tup will always take the ramifications of the whole project space into consideration, not just the subdirectory that you're in.</li>
   <li>Now you just edit your source files, Tupfiles, or whatever and run <span class="cmd">tup</span> when you're done.</li>
 </ol>
+
+<h2>MetaTup quick start</h2>
+<p>If you want to drive builds through MetaTup components instead of manually maintaining <span class="filename">TupBuild.yaml</span>, add a root <span class="filename">MetaTup.yaml</span> with one or more components that point at Tupfile functions. Then create a build directory, generate the concrete build description, and update it:</p>
+<pre>
+mkdir build
+cd build
+tup gen app
+tup
+</pre>
+<p>Use <span class="cmd">tup gen app -P profilename</span> to enable a profile, <span class="cmd">-B key=value</span> to override arguments, and <span class="cmd">-D ret[=path]</span> to materialize returned dist prefixes. The generated <span class="filename">TupBuild.yaml</span> stays editable for unrelated builds, while subsequent <span class="cmd">tup gen</span> invocations replace only the generated build entries with matching names.</p>

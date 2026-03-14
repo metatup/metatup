@@ -8,48 +8,28 @@ Think of MetaTup's relation to Tup as to how C++ is related to C.
 
 ## Introduced capabilities
 
-* Functions
-  * In-function rules blocks
-  * Binds expressions
-  * Calling functions calls them in current Tupfile's context, while spawning them - in their own contexts
-* `$(globs ...)` syntax for resolving globs in-place, useful when passing inputs to functions
-* `$(groups ...)` syntax for expanding built groups for returning from a function
-* `$(abs ...)` syntax for returning paths to single files
-* TupBuild.yaml files, allowing you to request building one or more functions in given directories
-* Dists syntax - for preparing redistributable prefixes faster
-  * Something like
-    ```tup
-    function demo {
-      bind brdir := "brdir"
+MetaTup extends Tup in a few major areas:
 
-      fbind { "bin": bin } := spawn "./lib/Tupfile" cc_binary ({
-        "sources": ""
-      })
+* Function-oriented Tupfiles.
+  Functions can contain rules, accept bound arguments, return values, and be invoked either in the current Tupfile context or via `spawn` in another Tupfile.
+* Expression helpers for function composition.
+  `$(globs ...)` resolves globs in-place, `$(groups ...)` expands built groups for returns and downstream use, and `$(abs ...)` returns the absolute path to a single file.
+* YAML-driven build selection with `MetaTup.yaml` and `TupBuild.yaml`.
+  Components can describe concrete builds or aggregate dependencies, and `tup gen` materializes those definitions into `TupBuild.yaml`.
+* Higher-level dependency wiring.
+  Components support argument `binds`, profile-based argument sets, conditional dependencies via `require_if`, and cross-package references such as `//pkg:component`.
+* Dist materialization.
+  Functions can assemble redistributable prefixes and expose them as named returns, which `TupBuild.yaml` can materialize through `dists` entries.
+* Optional automatic compilation database refresh.
+  `auto_compiledb` allows TupBuild-driven builds to regenerate `compile_commands.json` after successful updates.
 
-      -- bins is an internal dist ID
-      fbind bins := dist {
-        at "$(brdir)" as $(bin) => at "/bin" as $(realname $(bin))
-      }
+A typical MetaTup flow looks like this:
 
-      fbind headers := dist { ... }
-      
-      fbind dist := dist {
-        mounts $(bins) at "/"
-        mounts $(headers) at "/"
-      }
+1. Define reusable components in `MetaTup.yaml`.
+2. Create a build directory and run `tup gen <component>`.
+3. Run `tup` to execute the generated `TupBuild.yaml`.
 
-      return { "dist": "$(dist)" }
-    }
-    ```
-    ```yaml
-    builds:
-      - name: foo
-        ...
-        dists:
-          # Can have multiple
-          - from_return: dist
-            path: ./foo.dist
-    ```
+For the command-level details, see `metatup.1`.
 
 ---
 

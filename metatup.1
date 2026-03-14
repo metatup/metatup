@@ -216,6 +216,36 @@ If a --builddir argument is specified, the shell script is generated as if it we
 After the script name, individual output files can be listed in order to limit the scope of the shell script to only build those outputs. If no outputs are listed, the shell script will build all outputs.
 .RE
 .TP
+.B gen <component> [name] [-P profilename] [-B key=value] [-O builddir] [-D ret[=path]] [--no-strict]
+The gen command reads component definitions from MetaTup.yaml files and writes or updates a TupBuild.yaml file in the current directory. This is the high-level MetaTup workflow: define reusable components once, materialize concrete builds with 'metatup gen', then run 'metatup' to execute those generated builds.
+.P
+The command must be run from inside an initialized metatup hierarchy. The project root MetaTup.yaml is loaded first, and component dependencies may pull in sibling MetaTup.yaml files from other packages.
+.RS
+.TP
+.B component
+The component name to instantiate from the root MetaTup.yaml file.
+.TP
+.B name
+Optional suffix appended to the generated build name. For example, 'metatup gen app debug' produces a root build named 'app_debug'.
+.TP
+.B -P profilename
+Enable a named profile from the root MetaTup.yaml file. The selected profile's 'set' mappings are merged into the generated build arguments, and the profile name itself is also exported as a truthy argument so it can be referenced from bindings and 'require_if' conditions.
+.TP
+.B -B key=value
+Override or add a build argument on the command line. These overrides are applied after MetaTup defaults and profile settings.
+.TP
+.B -O builddir
+Override the root build directory. Without this option, the default root build directory is './<build-name>.build'.
+.TP
+.B -D ret[=path]
+Export a returned dist from the root build. If 'path' is omitted, the destination defaults to './<build-name>.<ret>.dist'.
+.TP
+.B --no-strict
+Write 'strict: false' to the generated TupBuild.yaml instead of the default 'strict: true'.
+.RE
+.P
+When TupBuild.yaml already exists, generated builds with matching names are replaced in-place while unrelated existing builds are preserved.
+.TP
 .B compiledb
 The compiledb command creates a compile_commands.json file for use with third-party tools that use that file as a reference to determine how files are compiled. The file is created at the top of the metatup hierarchy, or if you are using variants, each variant gets has its own compile_commands.json created at the root of the variant. You must annotate files that you want to export with the ^j flag. For example, you could add the ^j flag to your compiler invocations:
 
@@ -361,6 +391,76 @@ Set to '1' to show the environment nodes (such as PATH) and their dependencies. 
 .B graph.combine (default '0')
 Set to '1' to try to combine similar nodes in the graph. For example, instead of showing 10 separate compilation commands that all have one .c file input and one .o file output, this will combine them into one command to more easily see the whole structure of the graph. By default all nodes are shown separately.
 .RE
+.SH "METATUP YAML"
+MetaTup adds a higher-level YAML layer on top of Tupfiles. A project defines reusable components in one or more MetaTup.yaml files, then a build directory uses 'metatup gen' to materialize those component choices into TupBuild.yaml.
+.P
+The root MetaTup.yaml may contain the following top-level keys:
+.RS
+.TP
+.B defaults
+A mapping of argument names to default string values. These become the base argument set for generated builds.
+.TP
+.B auto_compiledb
+Boolean flag ('true' or 'false'). When set to 'true', successful 'metatup' updates of a TupBuild.yaml-driven build also refresh compile_commands.json. The 'gen' command copies this setting into TupBuild.yaml, but does not generate compile_commands.json by itself.
+.TP
+.B profiles
+A sequence of named profiles. Each profile contains a 'name' and an optional 'set' mapping of argument overrides that are applied when 'metatup gen -P <name>' is used.
+.TP
+.B components
+A sequence of component definitions. Each component requires a 'name'. A component may either specify both 'tupfile' and 'function' to create a concrete build, or specify only 'dependencies' to act as an aggregate bundle of other components.
+.RE
+.P
+Component and dependency bindings are declared with 'binds'. A binding can copy from one or more argument names with 'from', assign a literal or expression with 'value', or map input values through a 'case' list with an optional 'default'. Bindings are evaluated in order, so later bindings can reference values produced by earlier ones.
+.P
+Dependencies are listed under a component's 'dependencies' key. Dependency labels use one of three forms:
+.RS
+.TP
+.B //pkg:component
+Load 'pkg/MetaTup.yaml' and instantiate 'component' from it.
+.TP
+.B :component
+Load another component from the current package's MetaTup.yaml.
+.TP
+.B component
+Shorthand for a component in the current package, or in the root MetaTup.yaml when used at the project root.
+.RE
+.P
+Each dependency may define its own 'binds' and an optional 'require_if' list. If no 'require_if' conditions are present, the dependency is always enabled. Otherwise the dependency is enabled when any listed condition evaluates true. Supported condition forms are:
+.RS
+.TP
+.B profile_enabled: name
+True when the named argument is set to a truthy value. This is commonly paired with 'metatup gen -P name'.
+.TP
+.B args_equal:
+A mapping of argument names to exact string values. All listed pairs must match.
+.TP
+.B and / or
+A nested sequence of conditions.
+.TP
+.B not
+A single nested condition whose result is inverted.
+.RE
+.P
+For example:
+.nf
+
+defaults:
+  c/compiler: gcc
+profiles:
+  - name: dev
+    set:
+      c/compiler: clang
+components:
+  - name: app
+    tupfile: ./Tupfile
+    function: build_app
+    dependencies:
+      - name: //tools:tool
+        require_if:
+          - profile_enabled: dev
+.fi
+.P
+Running 'metatup gen app -P dev' in a build directory will write a TupBuild.yaml rooted at the 'app' component, enable the 'dev' profile arguments, and include the '//tools:tool' dependency because the selected profile exports the 'dev' argument as true.
 .SH "TUPFILES"
 You must create a file called "Tupfile" anywhere in the metatup hierarchy that you want to create an output file based on the input files. The input files can be anywhere else in the metatup hierarchy, but the output file(s) must be written in the same directory as the Tupfile.
 .TP
