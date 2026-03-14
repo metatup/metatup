@@ -34,6 +34,11 @@ fi
 cat > Tupfile << HERE
 : foreach *.c |> ^j^ gcc -c %f -o %o |> %B.o
 HERE
+mkdir sub
+cat > sub/Tupfile << HERE
+: foreach *.c |> ^j^ gcc -c %f -o %o |> %B.o
+HERE
+touch sub/baz.c
 compiledb
 
 for i in foo bar; do
@@ -42,6 +47,11 @@ for i in foo bar; do
 		exit 1
 	fi
 done
+
+if ! grep '"file": "sub/baz\.c"' compile_commands.json > /dev/null; then
+	echo "Error: Expected project-root-relative file path in compile_commands.json" 1>&2
+	exit 1
+fi
 
 if [ "$in_windows" = "1" ]; then
 	# Make sure backslashes in the directory paths are escaped. (The 8

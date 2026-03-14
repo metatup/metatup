@@ -7548,7 +7548,7 @@ static int print_compile_db(FILE *f, struct tup_entry *cmdtent, struct tup_entry
 	print_json(f, cmdtent->name.s, cmdtent->name.len);
 	fprintf(f, "\",\n");
 	fprintf(f, "    \"file\": \"");
-	if(get_relative_dir(f, NULL, srctent->tnode.tupid, filetent->tnode.tupid) < 0)
+	if(get_relative_dir(f, NULL, DOT_DT, filetent->tnode.tupid) < 0)
 		return -1;
 	fprintf(f, "\"\n");
 	fprintf(f, "}");
