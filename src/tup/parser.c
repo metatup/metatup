@@ -136,6 +136,8 @@ static int error_directive(struct tupfile *tf, char *cmdline);
 static int inspect_directive(struct tupfile *tf, char *cmdline);
 static int preload(struct tupfile *tf, char *cmdline);
 static int run_script(struct tupfile *tf, char *cmdline, int lno);
+static char *capture_run_script_output(struct tupfile *tf, const char *cmdline);
+static char *eval_backticks(struct tupfile *tf, const char *string);
 static int gitignore(struct tupfile *tf, struct tup_entry *dtent);
 static int check_toplevel_gitignore(struct tupfile *tf);
 static int parse_rule(struct tupfile *tf, char *p, int lno);
@@ -1641,6 +1643,96 @@ int exec_run_script(struct tupfile *tf, const char *cmdline, int lno)
 out_err:
 	free(rules);
 	return -1;
+}
+
+static char *capture_run_script_output(struct tupfile *tf, const char *cmdline)
+{
+	char *output;
+	int rc;
+	struct tent_tree *tt;
+
+	pthread_mutex_lock(&tf->ps->lock);
+	rc = gen_dir_list(tf, tf->tent->tnode.tupid);
+	pthread_mutex_unlock(&tf->ps->lock);
+	if(rc < 0)
+		return NULL;
+
+	RB_FOREACH(tt, tent_entries, &tf->env_root) {
+		if(tent_tree_add_dup(&tf->input_root, tt->tent) < 0)
+			return NULL;
+	}
+
+	if(tf->use_server)
+		rc = server_run_script(tf->f, tf->tent->tnode.tupid, cmdline, &tf->env_root, &output);
+	else
+		rc = serverless_run_script(tf->f, cmdline, &tf->env_root, &output);
+	if(rc < 0)
+		return NULL;
+	return output;
+}
+
+static char *eval_backticks(struct tupfile *tf, const char *string)
+{
+	const char *s = string;
+	struct estring e;
+	size_t x;
+
+	if(strchr(string, '`') == NULL)
+		return strdup(string);
+
+	if(estring_init(&e) < 0)
+		return NULL;
+	while(*s) {
+		const char *tick;
+		char *cmd;
+		char *output;
+		size_t len;
+
+		tick = strchr(s, '`');
+		if(!tick) {
+			if(estring_append(&e, s, strlen(s)) < 0)
+				goto err;
+			break;
+		}
+		if(estring_append(&e, s, tick-s) < 0)
+			goto err;
+		s = tick + 1;
+		tick = strchr(s, '`');
+		if(!tick) {
+			fprintf(tf->f, "tup error: Missing closing backtick in path expression '%s'.\n", string);
+			goto err;
+		}
+		len = tick - s;
+		cmd = malloc(len + 1);
+		if(!cmd) {
+			perror("malloc");
+			goto err;
+		}
+		memcpy(cmd, s, len);
+		cmd[len] = 0;
+		output = capture_run_script_output(tf, cmd);
+		free(cmd);
+		if(!output)
+			goto err;
+		len = strlen(output);
+		while(len > 0 && (output[len-1] == '\n' || output[len-1] == '\r'))
+			len--;
+		for(x = 0; x < len; x++) {
+			if(output[x] == '\n' || output[x] == '\r')
+				output[x] = ' ';
+		}
+		if(estring_append(&e, output, len) < 0) {
+			free(output);
+			goto err;
+		}
+		free(output);
+		s = tick + 1;
+	}
+	return e.s;
+
+err:
+	free(e.s);
+	return NULL;
 }
 
 int export(struct tupfile *tf, const char *cmdline)
@@ -6128,6 +6220,7 @@ static int next_path(struct tupfile *tf, const char *p, char *dest)
 {
 	int espace = 0;
 	int quoted = 0;
+	int backtick = 0;
 	const char *s = p;
 
 	for(; *s; s++) {
@@ -6142,7 +6235,12 @@ static int next_path(struct tupfile *tf, const char *p, char *dest)
 		} else if(*s == '"') {
 			quoted = !quoted;
 			continue;
-		} else if(isspace(*s) && !quoted) {
+		} else if(*s == '`') {
+			backtick = !backtick;
+			*dest = *s;
+			dest++;
+			continue;
+		} else if(isspace(*s) && !quoted && !backtick) {
 			*dest = 0;
 			return s - p;
 		} else {
@@ -6152,6 +6250,10 @@ static int next_path(struct tupfile *tf, const char *p, char *dest)
 	}
 	if(quoted) {
 		fprintf(tf->f, "tup error: Missing endquote on string: %s\n", p);
+		return -1;
+	}
+	if(backtick) {
+		fprintf(tf->f, "tup error: Missing closing backtick in path: %s\n", p);
 		return -1;
 	}
 	*dest = 0;
@@ -8149,9 +8251,16 @@ char *eval(struct tupfile *tf, const char *string, int expand_nodes)
 
 
 	char *rc = e.s;
-	if(expand_nodes != KEEP_NODES) {
-		rc = expand_node_strings(tf, e.s, expand_nodes);
+	if(expand_nodes != EXPAND_NODES_CMD) {
+		rc = eval_backticks(tf, e.s);
 		free(e.s);
+		if(!rc)
+			return NULL;
+	}
+	if(expand_nodes != KEEP_NODES) {
+		char *expanded = expand_node_strings(tf, rc, expand_nodes);
+		free(rc);
+		rc = expanded;
 	}
 	return rc;
 
