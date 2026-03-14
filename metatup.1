@@ -415,6 +415,9 @@ Component and dependency bindings are declared with 'binds'. A binding can copy 
 Dependencies are listed under a component's 'dependencies' key. Dependency labels use one of three forms:
 .RS
 .TP
+.B @repo//pkg:component
+Load 'pkg/MetaTup.yaml' from the named repository declared in MetaTupRepo.yaml and instantiate 'component' from it.
+.TP
 .B //pkg:component
 Load 'pkg/MetaTup.yaml' and instantiate 'component' from it.
 .TP
@@ -461,6 +464,44 @@ components:
 .fi
 .P
 Running 'metatup gen app -P dev' in a build directory will write a TupBuild.yaml rooted at the 'app' component, enable the 'dev' profile arguments, and include the '//tools:tool' dependency because the selected profile exports the 'dev' argument as true.
+.SH "METATUP REPOSITORIES"
+MetaTup repositories are declared in a top-level MetaTupRepo.yaml file. The file contains repository metadata and a 'dependencies' list. Each dependency requires a 'name' and exactly one source selector:
+.RS
+.TP
+.B path
+Use a local repository tree directly from its configured path.
+.TP
+.B git
+Clone a git repository into '.metatup/repos/<name>'.
+.TP
+.B github
+Shorthand for a GitHub repository in the form 'owner/repo'. This expands to the corresponding '.git' clone URL.
+.TP
+.B branch
+Optional branch name used when cloning a git or github repository.
+.RE
+.P
+For example:
+.nf
+
+meta:
+  name: foo
+
+dependencies:
+  - name: bar
+    git: url
+    branch: name
+  - name: baz
+    github: user/repo
+    branch: name
+  - name: quux
+    path: ../quux
+
+.fi
+.P
+Once declared, repositories can be referenced from MetaTup.yaml and from Tupfile function calls with Bazel-style labels such as '@baz//lib:tool' or 'call "@baz//lib" build_tool({})'. Inside a repository, plain '//pkg:component' and '//pkg' references stay rooted at that repository rather than the main workspace.
+.P
+For 'path' repositories, MetaTup imports files directly from the configured location instead of copying the repository into the current workspace. Git-backed repositories are still materialized locally when first used.
 .SH "TUPFILES"
 You must create a file called "Tupfile" anywhere in the metatup hierarchy that you want to create an output file based on the input files. The input files can be anywhere else in the metatup hierarchy, but the output file(s) must be written in the same directory as the Tupfile.
 .TP

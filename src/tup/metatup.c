@@ -1,4 +1,5 @@
 #include "metatup.h"
+#include "metatup_repo.h"
 #include "config.h"
 #include "tupbuild.h"
 #include <yaml.h>
@@ -126,12 +127,14 @@ struct mt_yaml_parser {
 };
 
 struct mt_label {
+	char *repo;
 	char *package;
 	char *component;
 };
 
 static int mt_parse_label(const char *text, const char *current_package, struct mt_label *label, char **err);
-static int mt_make_dep_build_name(const char *root_build_name, const char *package, const char *component, char **out);
+static int mt_make_dep_build_name(const char *root_build_name, const char *repo_root_rel,
+				  const char *package, const char *component, char **out);
 
 static int mt_parse_quoted_string(const char **sp, char **out)
 {
@@ -1279,30 +1282,45 @@ static struct mt_profile *mt_find_profile(struct mt_file *mf, const char *name)
 static int mt_parse_label(const char *text, const char *current_package, struct mt_label *label, char **err)
 {
 	const char *colon;
+	const char *pkgstart;
 	memset(label, 0, sizeof *label);
-	if(strncmp(text, "//", 2) == 0) {
-		colon = strchr(text + 2, ':');
-		if(!colon || colon == text + 2 || colon[1] == 0)
+	pkgstart = text;
+	if(text[0] == '@') {
+		const char *slashes = strstr(text, "//");
+		if(!slashes || slashes == text + 1)
 			goto bad;
-		label->package = strndup(text + 2, colon - (text + 2));
+		label->repo = strndup(text + 1, slashes - (text + 1));
+		if(!label->repo) {
+			perror("strndup");
+			return -1;
+		}
+		pkgstart = slashes;
+	}
+	if(strncmp(pkgstart, "//", 2) == 0) {
+		colon = strchr(pkgstart + 2, ':');
+		if(!colon || colon[1] == 0)
+			goto bad;
+		label->package = strndup(pkgstart + 2, colon - (pkgstart + 2));
 		label->component = strdup(colon + 1);
-	} else if(text[0] == ':') {
-		if(!current_package || text[1] == 0)
+	} else if(pkgstart[0] == ':') {
+		if(!current_package || pkgstart[1] == 0)
 			goto bad;
 		label->package = strdup(current_package);
-		label->component = strdup(text + 1);
+		label->component = strdup(pkgstart + 1);
 	} else {
 		label->package = strdup(current_package ? current_package : "");
-		label->component = strdup(text);
+		label->component = strdup(pkgstart);
 	}
 	if(!label->package || !label->component) {
 		perror("strdup");
+		free(label->repo);
 		free(label->package);
 		free(label->component);
 		return -1;
 	}
 	return 0;
 bad:
+	free(label->repo);
 	*err = strdup("invalid MetaTup label");
 	if(!*err)
 		perror("strdup");
@@ -1311,32 +1329,64 @@ bad:
 
 static void mt_free_label(struct mt_label *label)
 {
+	free(label->repo);
 	free(label->package);
 	free(label->component);
 }
 
-static int mt_load_labeled_component(struct mt_state *st, const char *label_text, const char *current_package,
-				     struct mt_file *mf, struct mt_component **component, char **package, char **err)
+static int mt_load_labeled_component(struct mt_state *st, const char *label_text,
+				     const char *current_repo_root_abs, const char *current_repo_root_rel,
+				     const char *current_package, struct mt_file *mf,
+				     struct mt_component **component, char **repo_root_abs, char **repo_root_rel,
+				     char **package, char **err)
 {
 	struct mt_label label;
 	char *meta = NULL;
+	char *target_repo_root_abs = NULL;
+	char *target_repo_root_rel = NULL;
 	int rc = -1;
+	(void)st;
 	if(mt_parse_label(label_text, current_package, &label, err) < 0)
 		return -1;
-	if(label.package[0] == 0)
-		meta = strdup(st->root_meta_path);
-	else {
-		char *pkg = mt_join(st->root, label.package);
-		if(!pkg) {
+	if(label.repo) {
+		char *repo_path = NULL;
+		char *repo_err = NULL;
+		char *repo_rel = NULL;
+		if(metatup_repo_materialize(current_repo_root_abs, label.repo, &repo_path, &repo_err) < 0) {
+			*err = repo_err ? repo_err : strdup("unable to materialize repository");
 			mt_free_label(&label);
 			return -1;
 		}
+		target_repo_root_abs = repo_path;
+		repo_rel = mt_relpath(st->root, target_repo_root_abs);
+		if(repo_rel && strcmp(repo_rel, ".") == 0) {
+			free(repo_rel);
+			repo_rel = strdup("");
+		}
+		target_repo_root_rel = repo_rel;
+		if(!target_repo_root_rel) {
+			perror("malloc");
+			goto out;
+		}
+	} else {
+		target_repo_root_abs = strdup(current_repo_root_abs);
+		target_repo_root_rel = strdup(current_repo_root_rel ? current_repo_root_rel : "");
+		if(!target_repo_root_abs || !target_repo_root_rel) {
+			perror("strdup");
+			goto out;
+		}
+	}
+	if(label.package[0] == 0) {
+		meta = mt_join(target_repo_root_abs, "MetaTup.yaml");
+	} else {
+		char *pkg = mt_join(target_repo_root_abs, label.package);
+		if(!pkg)
+			goto out;
 		meta = mt_join(pkg, "MetaTup.yaml");
 		free(pkg);
 	}
 	if(!meta) {
-		mt_free_label(&label);
-		return -1;
+		goto out;
 	}
 	if(mt_load_file(meta, mf, err) < 0)
 		goto out;
@@ -1352,13 +1402,17 @@ static int mt_load_labeled_component(struct mt_state *st, const char *label_text
 		goto out;
 	}
 	*package = strdup(label.package);
-	if(!*package) {
+	*repo_root_abs = strdup(target_repo_root_abs);
+	*repo_root_rel = strdup(target_repo_root_rel);
+	if(!*package || !*repo_root_abs || !*repo_root_rel) {
 		perror("strdup");
 		goto out;
 	}
 	rc = 0;
 out:
 	free(meta);
+	free(target_repo_root_abs);
+	free(target_repo_root_rel);
 	mt_free_label(&label);
 	if(rc < 0)
 		mt_free_file(mf);
@@ -1366,6 +1420,7 @@ out:
 }
 
 static int mt_eval_expr(const char *expr, struct mt_kv *args, int num_args,
+			const char *current_repo_root_abs, const char *current_repo_root_rel,
 			const char *current_package, const char *root_name, char **out)
 {
 	size_t cap = strlen(expr) + 16;
@@ -1441,12 +1496,47 @@ static int mt_eval_expr(const char *expr, struct mt_kv *args, int num_args,
 						return -1;
 					}
 				}
-				if(mt_make_dep_build_name(root_name, label.package, label.component, &dep_build) < 0) {
-					mt_free_label(&label);
-					free(label_text);
-					free(ret_name);
-					free(buf);
-					return -1;
+				{
+					const char *dep_repo_root_rel = current_repo_root_rel;
+					char *repo_path = NULL;
+					char *repo_err = NULL;
+					char *owned_repo_root_rel = NULL;
+					if(label.repo) {
+						if(metatup_repo_materialize(current_repo_root_abs, label.repo, &repo_path, &repo_err) < 0) {
+							if(repo_err)
+								fprintf(stderr, "%s\n", repo_err);
+							free(repo_err);
+							mt_free_label(&label);
+							free(label_text);
+							free(ret_name);
+							free(buf);
+							return -1;
+						}
+						owned_repo_root_rel = mt_relpath(current_repo_root_abs, repo_path);
+						if(owned_repo_root_rel && strcmp(owned_repo_root_rel, ".") == 0) {
+							free(owned_repo_root_rel);
+							owned_repo_root_rel = strdup("");
+						}
+						free(repo_path);
+						if(!owned_repo_root_rel) {
+							perror("malloc");
+							mt_free_label(&label);
+							free(label_text);
+							free(ret_name);
+							free(buf);
+							return -1;
+						}
+						dep_repo_root_rel = owned_repo_root_rel;
+					}
+					if(mt_make_dep_build_name(root_name, dep_repo_root_rel, label.package, label.component, &dep_build) < 0) {
+						free(owned_repo_root_rel);
+						mt_free_label(&label);
+						free(label_text);
+						free(ret_name);
+						free(buf);
+						return -1;
+					}
+					free(owned_repo_root_rel);
 				}
 				rewritten_len = strlen(dep_build) + strlen(ret_name) + 16;
 				rewritten = malloc(rewritten_len);
@@ -1502,6 +1592,7 @@ static int mt_eval_expr(const char *expr, struct mt_kv *args, int num_args,
 }
 
 static int mt_apply_binds(struct mt_bind *binds, int num_binds, struct mt_kv *src, int num_src,
+			  const char *current_repo_root_abs, const char *current_repo_root_rel,
 			  const char *current_package, const char *root_name,
 			  struct mt_kv **dst, int *num_dst)
 {
@@ -1520,6 +1611,7 @@ static int mt_apply_binds(struct mt_bind *binds, int num_binds, struct mt_kv *sr
 				for(y=0; y<binds[x].num_cases; y++) {
 					if(strcmp(srcval, binds[x].cases[y].key) == 0) {
 						if(mt_eval_expr(binds[x].cases[y].value, scope, num_scope,
+								current_repo_root_abs, current_repo_root_rel,
 								current_package, root_name, &value) < 0)
 							goto err;
 						break;
@@ -1528,11 +1620,13 @@ static int mt_apply_binds(struct mt_bind *binds, int num_binds, struct mt_kv *sr
 			}
 			if(!value) {
 				if(mt_eval_expr(binds[x].default_case ? binds[x].default_case : "", scope, num_scope,
+						current_repo_root_abs, current_repo_root_rel,
 						current_package, root_name, &value) < 0)
 					goto err;
 			}
 		} else if(binds[x].value) {
-			if(mt_eval_expr(binds[x].value, scope, num_scope, current_package, root_name, &value) < 0)
+			if(mt_eval_expr(binds[x].value, scope, num_scope, current_repo_root_abs, current_repo_root_rel,
+					current_package, root_name, &value) < 0)
 				goto err;
 		} else {
 			srcval = mt_get_kv(scope, num_scope, binds[x].from[0]);
@@ -1628,11 +1722,24 @@ static char *mt_sanitize(const char *name)
 	return out;
 }
 
-static int mt_make_dep_build_name(const char *root_build_name, const char *package, const char *component, char **out)
+static int mt_make_dep_build_name(const char *root_build_name, const char *repo_root_rel,
+				  const char *package, const char *component, char **out)
 {
-	char *sp = mt_sanitize(package && package[0] ? package : "root");
+	char *location = NULL;
+	char *sp;
 	char *sc = mt_sanitize(component);
 	size_t len;
+	if(repo_root_rel && repo_root_rel[0] && package && package[0]) {
+		location = mt_join(repo_root_rel, package);
+	} else if(repo_root_rel && repo_root_rel[0]) {
+		location = strdup(repo_root_rel);
+	} else if(package && package[0]) {
+		location = strdup(package);
+	} else {
+		location = strdup("root");
+	}
+	sp = location ? mt_sanitize(location) : NULL;
+	free(location);
 	if(!sp || !sc) {
 		free(sp);
 		free(sc);
@@ -1725,11 +1832,14 @@ static int mt_append_dep_result(struct mt_dep_result *dr, struct mt_generated_bu
 	return 0;
 }
 
-static int mt_collect_component_builds(struct mt_state *st, const char *package, struct mt_component *component,
+static int mt_collect_component_builds(struct mt_state *st,
+				       const char *repo_root_abs, const char *repo_root_rel,
+				       const char *package, struct mt_component *component,
 				       const char *concrete_name, const char *concrete_builddir, const char *root_name,
 				       struct mt_kv *incoming_args, int num_incoming_args, struct mt_dep_result *result, char **err);
 
 static int mt_expand_component_deps(struct mt_state *st, struct mt_generated_build *parent,
+				    const char *repo_root_abs, const char *repo_root_rel,
 				    const char *package, struct mt_component *component,
 				    const char *root_name, struct mt_kv *effective_args, int num_effective_args,
 				    char **err)
@@ -1755,7 +1865,8 @@ static int mt_expand_component_deps(struct mt_state *st, struct mt_generated_bui
 			struct mt_kv *bound_dep_args = NULL;
 			int num_bound_dep_args = 0;
 			if(mt_apply_binds(component->deps[x].binds, component->deps[x].num_binds,
-					  effective_args, num_effective_args, package, root_name,
+					  effective_args, num_effective_args,
+					  repo_root_abs, repo_root_rel, package, root_name,
 					  &bound_dep_args, &num_bound_dep_args) < 0) {
 				mt_free_kvs(dep_args, num_dep_args);
 				return -1;
@@ -1764,15 +1875,27 @@ static int mt_expand_component_deps(struct mt_state *st, struct mt_generated_bui
 			dep_args = bound_dep_args;
 			num_dep_args = num_bound_dep_args;
 		}
-		if(mt_load_labeled_component(st, component->deps[x].name, package, &dep_file, &dep_component, &dep_package, err) < 0) {
-			mt_free_kvs(dep_args, num_dep_args);
-			return -1;
-		}
-		if(mt_collect_component_builds(st, dep_package, dep_component, NULL, NULL, root_name, dep_args, num_dep_args, &dep_result, err) < 0) {
-			mt_free_file(&dep_file);
-			mt_free_kvs(dep_args, num_dep_args);
-			free(dep_package);
-			return -1;
+		{
+			char *dep_repo_root_abs = NULL;
+			char *dep_repo_root_rel = NULL;
+			if(mt_load_labeled_component(st, component->deps[x].name, repo_root_abs, repo_root_rel, package,
+						     &dep_file, &dep_component,
+						     &dep_repo_root_abs, &dep_repo_root_rel, &dep_package, err) < 0) {
+				mt_free_kvs(dep_args, num_dep_args);
+				return -1;
+			}
+			if(mt_collect_component_builds(st, dep_repo_root_abs, dep_repo_root_rel, dep_package,
+						      dep_component, NULL, NULL, root_name,
+						      dep_args, num_dep_args, &dep_result, err) < 0) {
+				mt_free_file(&dep_file);
+				mt_free_kvs(dep_args, num_dep_args);
+				free(dep_repo_root_abs);
+				free(dep_repo_root_rel);
+				free(dep_package);
+				return -1;
+			}
+			free(dep_repo_root_abs);
+			free(dep_repo_root_rel);
 		}
 		alias = strrchr(component->deps[x].name, ':');
 		alias = alias ? alias + 1 : component->deps[x].name;
@@ -1793,7 +1916,9 @@ static int mt_expand_component_deps(struct mt_state *st, struct mt_generated_bui
 	return 0;
 }
 
-static int mt_build_component(struct mt_state *st, const char *package, struct mt_component *component,
+static int mt_build_component(struct mt_state *st,
+			      const char *repo_root_abs, const char *repo_root_rel,
+			      const char *package, struct mt_component *component,
 			      const char *concrete_name, const char *concrete_builddir, const char *root_name,
 			      struct mt_kv *incoming_args, int num_incoming_args, struct mt_generated_build **out, char **err)
 {
@@ -1812,7 +1937,7 @@ static int mt_build_component(struct mt_state *st, const char *package, struct m
 		struct mt_kv *bound_args = NULL;
 		int num_bound_args = 0;
 		if(mt_apply_binds(component->binds, component->num_binds, effective_args, num_effective_args,
-				  package, root_name, &bound_args, &num_bound_args) < 0)
+				  repo_root_abs, repo_root_rel, package, root_name, &bound_args, &num_bound_args) < 0)
 			goto out;
 		mt_free_kvs(effective_args, num_effective_args);
 		effective_args = bound_args;
@@ -1861,7 +1986,8 @@ static int mt_build_component(struct mt_state *st, const char *package, struct m
 				struct mt_kv *bound_dep_args = NULL;
 				int num_bound_dep_args = 0;
 				if(mt_apply_binds(component->deps[enabled_dep_idx].binds, component->deps[enabled_dep_idx].num_binds,
-						  effective_args, num_effective_args, package, root_name,
+						  effective_args, num_effective_args,
+						  repo_root_abs, repo_root_rel, package, root_name,
 						  &bound_dep_args, &num_bound_dep_args) < 0) {
 					mt_free_kvs(dep_args, num_dep_args);
 					goto out;
@@ -1870,15 +1996,27 @@ static int mt_build_component(struct mt_state *st, const char *package, struct m
 				dep_args = bound_dep_args;
 				num_dep_args = num_bound_dep_args;
 			}
-			if(mt_load_labeled_component(st, component->deps[enabled_dep_idx].name, package, &dep_file, &dep_component, &dep_package, err) < 0) {
-				mt_free_kvs(dep_args, num_dep_args);
-				goto out;
-			}
-			if(mt_build_component(st, dep_package, dep_component, concrete_name, concrete_builddir, root_name, dep_args, num_dep_args, &dep_build, err) < 0) {
-				mt_free_file(&dep_file);
-				mt_free_kvs(dep_args, num_dep_args);
-				free(dep_package);
-				goto out;
+			{
+				char *dep_repo_root_abs = NULL;
+				char *dep_repo_root_rel = NULL;
+				if(mt_load_labeled_component(st, component->deps[enabled_dep_idx].name,
+							     repo_root_abs, repo_root_rel, package, &dep_file, &dep_component,
+							     &dep_repo_root_abs, &dep_repo_root_rel, &dep_package, err) < 0) {
+					mt_free_kvs(dep_args, num_dep_args);
+					goto out;
+				}
+				if(mt_build_component(st, dep_repo_root_abs, dep_repo_root_rel, dep_package, dep_component,
+						      concrete_name, concrete_builddir, root_name,
+						      dep_args, num_dep_args, &dep_build, err) < 0) {
+					mt_free_file(&dep_file);
+					mt_free_kvs(dep_args, num_dep_args);
+					free(dep_repo_root_abs);
+					free(dep_repo_root_rel);
+					free(dep_package);
+					goto out;
+				}
+				free(dep_repo_root_abs);
+				free(dep_repo_root_rel);
 			}
 			free(build.name);
 			build.name = NULL;
@@ -1894,7 +2032,9 @@ static int mt_build_component(struct mt_state *st, const char *package, struct m
 		{
 			struct mt_dep_result dep_result;
 			memset(&dep_result, 0, sizeof dep_result);
-			if(mt_collect_component_builds(st, package, component, NULL, NULL, root_name, effective_args, num_effective_args, &dep_result, err) < 0)
+			if(mt_collect_component_builds(st, repo_root_abs, repo_root_rel, package, component,
+						      NULL, NULL, root_name,
+						      effective_args, num_effective_args, &dep_result, err) < 0)
 				goto out;
 			if(dep_result.num_builds == 0) {
 				mt_free_dep_result(&dep_result);
@@ -1939,7 +2079,7 @@ static int mt_build_component(struct mt_state *st, const char *package, struct m
 		}
 	}
 	{
-		char *pkg_dir = package && package[0] ? mt_join(st->root, package) : strdup(st->root);
+		char *pkg_dir = package && package[0] ? mt_join(repo_root_abs, package) : strdup(repo_root_abs);
 		char *abs_tupfile = NULL;
 		char *cwd_dir = strdup(st->cwd);
 		if(!pkg_dir || !cwd_dir) {
@@ -1978,7 +2118,8 @@ static int mt_build_component(struct mt_state *st, const char *package, struct m
 	}
 	if(mt_clone_kvs_except(effective_args, num_effective_args, &build.args, &build.num_args, st->profile) < 0)
 		goto out;
-	if(mt_expand_component_deps(st, &build, package, component, root_name, effective_args, num_effective_args, err) < 0)
+	if(mt_expand_component_deps(st, &build, repo_root_abs, repo_root_rel, package, component,
+				    root_name, effective_args, num_effective_args, err) < 0)
 		goto out;
 	if(mt_add_generated(st, &build) < 0)
 		goto out;
@@ -1991,7 +2132,9 @@ out:
 	return rc;
 }
 
-static int mt_collect_component_builds(struct mt_state *st, const char *package, struct mt_component *component,
+static int mt_collect_component_builds(struct mt_state *st,
+				       const char *repo_root_abs, const char *repo_root_rel,
+				       const char *package, struct mt_component *component,
 				       const char *concrete_name, const char *concrete_builddir, const char *root_name,
 				       struct mt_kv *incoming_args, int num_incoming_args, struct mt_dep_result *result, char **err)
 {
@@ -2000,7 +2143,7 @@ static int mt_collect_component_builds(struct mt_state *st, const char *package,
 		char *dep_name = NULL;
 		char *dep_builddir = NULL;
 		if(!concrete_name) {
-			if(mt_make_dep_build_name(root_name, package, component->name, &dep_name) < 0)
+			if(mt_make_dep_build_name(root_name, repo_root_rel, package, component->name, &dep_name) < 0)
 				return -1;
 			concrete_name = dep_name;
 		}
@@ -2021,7 +2164,9 @@ static int mt_collect_component_builds(struct mt_state *st, const char *package,
 			}
 			concrete_builddir = dep_builddir;
 		}
-		if(mt_build_component(st, package, component, concrete_name, concrete_builddir, root_name, incoming_args, num_incoming_args, &build, err) < 0) {
+		if(mt_build_component(st, repo_root_abs, repo_root_rel, package, component,
+				      concrete_name, concrete_builddir, root_name,
+				      incoming_args, num_incoming_args, &build, err) < 0) {
 			free(dep_name);
 			free(dep_builddir);
 			return -1;
@@ -2047,7 +2192,8 @@ static int mt_collect_component_builds(struct mt_state *st, const char *package,
 			struct mt_kv *bound_args = NULL;
 			int num_bound_args = 0;
 			if(mt_apply_binds(component->binds, component->num_binds, effective_args, num_effective_args,
-					  package, root_name, &bound_args, &num_bound_args) < 0) {
+					  repo_root_abs, repo_root_rel, package, root_name,
+					  &bound_args, &num_bound_args) < 0) {
 				mt_free_kvs(effective_args, num_effective_args);
 				return -1;
 			}
@@ -2073,7 +2219,8 @@ static int mt_collect_component_builds(struct mt_state *st, const char *package,
 				struct mt_kv *bound_dep_args = NULL;
 				int num_bound_dep_args = 0;
 				if(mt_apply_binds(component->deps[x].binds, component->deps[x].num_binds,
-						  effective_args, num_effective_args, package, root_name,
+						  effective_args, num_effective_args,
+						  repo_root_abs, repo_root_rel, package, root_name,
 						  &bound_dep_args, &num_bound_dep_args) < 0) {
 					mt_free_kvs(dep_args, num_dep_args);
 					goto out;
@@ -2082,15 +2229,27 @@ static int mt_collect_component_builds(struct mt_state *st, const char *package,
 				dep_args = bound_dep_args;
 				num_dep_args = num_bound_dep_args;
 			}
-			if(mt_load_labeled_component(st, component->deps[x].name, package, &dep_file, &dep_component, &dep_package, err) < 0) {
-				mt_free_kvs(dep_args, num_dep_args);
-				goto out;
-			}
-			if(mt_collect_component_builds(st, dep_package, dep_component, NULL, NULL, root_name, dep_args, num_dep_args, &nested, err) < 0) {
-				mt_free_file(&dep_file);
-				mt_free_kvs(dep_args, num_dep_args);
-				free(dep_package);
-				goto out;
+			{
+				char *dep_repo_root_abs = NULL;
+				char *dep_repo_root_rel = NULL;
+				if(mt_load_labeled_component(st, component->deps[x].name, repo_root_abs, repo_root_rel, package,
+							     &dep_file, &dep_component,
+							     &dep_repo_root_abs, &dep_repo_root_rel, &dep_package, err) < 0) {
+					mt_free_kvs(dep_args, num_dep_args);
+					goto out;
+				}
+				if(mt_collect_component_builds(st, dep_repo_root_abs, dep_repo_root_rel, dep_package,
+							      dep_component, NULL, NULL, root_name,
+							      dep_args, num_dep_args, &nested, err) < 0) {
+					mt_free_file(&dep_file);
+					mt_free_kvs(dep_args, num_dep_args);
+					free(dep_repo_root_abs);
+					free(dep_repo_root_rel);
+					free(dep_package);
+					goto out;
+				}
+				free(dep_repo_root_abs);
+				free(dep_repo_root_rel);
 			}
 			for(y=0; y<nested.num_builds; y++) {
 				if(mt_append_dep_result(result, nested.builds[y]) < 0) {
@@ -2464,7 +2623,9 @@ int metatup_gen(int argc, char **argv)
 		perror("malloc");
 		goto out;
 	}
-	if(mt_build_component(&st, "", root_component, root_build_name, root_builddir, root_build_name, root_args, num_root_args, &root_build, &err) < 0) {
+	if(mt_build_component(&st, st.root, "", "", root_component,
+			      root_build_name, root_builddir, root_build_name,
+			      root_args, num_root_args, &root_build, &err) < 0) {
 		fprintf(stderr, "%s\n", err ? err : "generation failed");
 		goto out;
 	}

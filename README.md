@@ -17,7 +17,9 @@ MetaTup extends Tup in a few major areas:
 * YAML-driven build selection with `MetaTup.yaml` and `TupBuild.yaml`.
   Components can describe concrete builds or aggregate dependencies, and `tup gen` materializes those definitions into `TupBuild.yaml`.
 * Higher-level dependency wiring.
-  Components support argument `binds`, profile-based argument sets, conditional dependencies via `require_if`, and cross-package references such as `//pkg:component`.
+  Components support argument `binds`, profile-based argument sets, conditional dependencies via `require_if`, and cross-package references such as `//pkg:component` or `@repo//pkg:component`.
+* Repository workspaces.
+  `MetaTupRepo.yaml` can declare named repositories, and both Tupfile function calls and MetaTup component dependencies can address them with Bazel-style `@repo//...` labels. `path:` repositories are imported directly from their source location rather than copied into the workspace.
 * Dist materialization.
   Functions can assemble redistributable prefixes and expose them as named returns, which `TupBuild.yaml` can materialize through `dists` entries.
 * Optional automatic compilation database refresh.

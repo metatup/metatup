@@ -31,6 +31,7 @@
 #include "privs.h"
 #include "variant.h"
 #include "version.h"
+#include "metatup_repo.h"
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
@@ -58,6 +59,15 @@ int tup_init(int argc, char **argv)
 	}
 	if(open_tup_top() < 0) {
 		goto out_err;
+	}
+	{
+		char *repo_err = NULL;
+		if(metatup_repo_materialize_all(get_tup_top(), &repo_err) < 0) {
+			if(repo_err)
+				fprintf(stderr, "tup error: %s\n", repo_err);
+			free(repo_err);
+			goto out_err;
+		}
 	}
 	if(tup_lock_init() < 0) {
 		goto out_err;

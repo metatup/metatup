@@ -37,6 +37,7 @@
 #include "variant.h"
 #include "estring.h"
 #include "tupbuild.h"
+#include "metatup_repo.h"
 #include "flist.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -3263,6 +3264,81 @@ static int canonicalize_path_simple(const char *path, char **out)
 	return 0;
 }
 
+static int relpath_simple(const char *from_dir, const char *to_dir, char **out)
+{
+	char *from = strdup(from_dir);
+	char *to = strdup(to_dir);
+	char *fromparts[128];
+	char *toparts[128];
+	char *save = NULL;
+	char *tok;
+	int fromn = 0;
+	int ton = 0;
+	int i = 0;
+	size_t len = 0;
+	char *result;
+	int first = 1;
+
+	if(!from || !to) {
+		perror("strdup");
+		free(from);
+		free(to);
+		return -1;
+	}
+	for(tok = strtok_r(from, "/", &save); tok; tok = strtok_r(NULL, "/", &save)) {
+		if(strcmp(tok, ".") == 0)
+			continue;
+		fromparts[fromn++] = tok;
+	}
+	save = NULL;
+	for(tok = strtok_r(to, "/", &save); tok; tok = strtok_r(NULL, "/", &save)) {
+		if(strcmp(tok, ".") == 0)
+			continue;
+		toparts[ton++] = tok;
+	}
+	while(i < fromn && i < ton && strcmp(fromparts[i], toparts[i]) == 0)
+		i++;
+	if(i == fromn && i == ton) {
+		*out = strdup(".");
+		free(from);
+		free(to);
+		if(!*out) {
+			perror("strdup");
+			return -1;
+		}
+		return 0;
+	}
+	{
+		int common = i;
+		for(i = common; i < fromn; i++)
+			len += 3;
+		for(i = common; i < ton; i++)
+			len += strlen(toparts[i]) + 1;
+		result = malloc(len + 1);
+		if(!result) {
+			perror("malloc");
+			free(from);
+			free(to);
+			return -1;
+		}
+		result[0] = 0;
+		for(i = common; i < fromn; i++) {
+			strcat(result, first ? ".." : "/..");
+			first = 0;
+		}
+		for(i = common; i < ton; i++) {
+			if(!first)
+				strcat(result, "/");
+			strcat(result, toparts[i]);
+			first = 0;
+		}
+	}
+	free(from);
+	free(to);
+	*out = result;
+	return 0;
+}
+
 static int dist_normalize_dest(struct tupfile *tf, const char *base, const char *name, char **out)
 {
 	char *joined;
@@ -4547,26 +4623,96 @@ static int load_function_file(struct tupfile *tf, const char *file, struct tup_f
 	tupid_t newdt;
 	struct tup_entry *srctent = NULL;
 	struct tup_entry *newtent;
-	struct estring root_prefix;
+	char current_path[PATH_MAX];
 	char *normalized_file = NULL;
 	const char *resolved_file = file;
+	char *current_repo_root = NULL;
 	int rc = -1;
 
 	*oldtent = tf->curtent;
 	*old_dfd = tf->cur_dfd;
 	newdt = tf->curtent->tnode.tupid;
-	estring_init(&root_prefix);
-	if(strncmp(file, "//", 2) == 0) {
-		const char *pkg = file + 2;
-		struct tup_entry *current_src = variant_tent_to_srctent(tf->curtent);
-		size_t prefix_len;
-		size_t pkg_len = strlen(pkg);
+	if(tf->curtent && tf->curtent->tnode.tupid != DOT_DT) {
+		if(snprint_tup_entry(current_path, sizeof(current_path), tf->curtent) >= (signed)sizeof(current_path)) {
+			fprintf(tf->f, "tup error: Current function directory is too long.\n");
+			goto out;
+		}
+		current_repo_root = metatup_repo_rel_root_from_path(get_tup_top(), current_path[0] == '/' ? current_path + 1 : current_path);
+	} else {
+		strcpy(current_path, ".");
+		current_repo_root = strdup("");
+	}
+	if(!current_repo_root) {
+		perror("strdup");
+		goto out;
+	}
+	if(strncmp(file, "//", 2) == 0 || (file[0] == '@' && strstr(file, "//") != NULL)) {
+		const char *pkg;
+		size_t pkg_len;
 		size_t suffix_len;
 		const char *suffix;
+		char *repo_root = NULL;
+		char *repo_prefix = NULL;
+		const char *current_dir_rel = current_path[0] == '/' ? current_path + 1 : current_path;
 
-		if(get_relative_dir(NULL, &root_prefix, current_src->tnode.tupid, DOT_DT) < 0)
-			goto out;
-		prefix_len = root_prefix.len;
+		if(file[0] == '@') {
+			const char *slashes = strstr(file, "//");
+			char *repo_name;
+			char *repo_err = NULL;
+
+			if(!slashes || slashes == file + 1) {
+				fprintf(tf->f, "tup error: Invalid repository label '%s'.\n", file);
+				goto out;
+			}
+			repo_name = strndup(file + 1, slashes - (file + 1));
+			if(!repo_name) {
+				perror("strndup");
+				goto out;
+			}
+			{
+				char *repo_base = current_repo_root[0] ? malloc(strlen(get_tup_top()) + strlen(current_repo_root) + 2) : strdup(get_tup_top());
+				char current_abs[PATH_MAX];
+				if(!repo_base) {
+					perror("malloc");
+					free(repo_name);
+					goto out;
+				}
+				if(current_repo_root[0])
+					sprintf(repo_base, "%s/%s", get_tup_top(), current_repo_root);
+				if(metatup_repo_materialize(repo_base, repo_name, &repo_root, &repo_err) < 0) {
+					fprintf(tf->f, "tup error: %s.\n", repo_err ? repo_err : "unable to materialize repository");
+					free(repo_base);
+					free(repo_name);
+					free(repo_err);
+					goto out;
+				}
+				free(repo_base);
+				if(current_dir_rel[0]) {
+					snprintf(current_abs, sizeof(current_abs), "%s/%s", get_tup_top(), current_dir_rel);
+				} else {
+					snprintf(current_abs, sizeof(current_abs), "%s", get_tup_top());
+				}
+				if(relpath_simple(current_abs, repo_root, &repo_prefix) < 0) {
+					free(repo_name);
+					free(repo_root);
+					goto out;
+				}
+			}
+			pkg = slashes + 2;
+			free(repo_name);
+		} else {
+			pkg = file + 2;
+			repo_root = strdup(current_repo_root);
+			if(!repo_root) {
+				perror("strdup");
+				goto out;
+			}
+			if(relpath_simple(current_dir_rel, repo_root[0] ? repo_root : ".", &repo_prefix) < 0) {
+				free(repo_root);
+				goto out;
+			}
+		}
+		pkg_len = strlen(pkg);
 		if(pkg_len == 0) {
 			suffix = "Tupfile";
 			suffix_len = strlen(suffix);
@@ -4577,12 +4723,14 @@ static int load_function_file(struct tupfile *tf, const char *file, struct tup_f
 			suffix = pkg;
 			suffix_len = pkg_len + strlen("/Tupfile");
 		}
-		normalized_file = malloc((strcmp(root_prefix.s, ".") == 0 ? 0 : prefix_len + 1) + suffix_len + 1);
+		normalized_file = malloc((strcmp(repo_prefix, ".") == 0 ? 0 : strlen(repo_prefix) + 1) + suffix_len + 1);
 		if(!normalized_file) {
 			perror("malloc");
+			free(repo_prefix);
+			free(repo_root);
 			goto out;
 		}
-		if(strcmp(root_prefix.s, ".") == 0) {
+		if(strcmp(repo_prefix, ".") == 0) {
 			if(pkg_len == 0) {
 				snprintf(normalized_file, suffix_len + 1, "Tupfile");
 			} else if(pkg[pkg_len-1] == '/') {
@@ -4591,12 +4739,14 @@ static int load_function_file(struct tupfile *tf, const char *file, struct tup_f
 				snprintf(normalized_file, suffix_len + 1, "%s/Tupfile", pkg);
 			}
 		} else if(pkg_len == 0) {
-			snprintf(normalized_file, prefix_len + 1 + suffix_len + 1, "%s/Tupfile", root_prefix.s);
+			snprintf(normalized_file, strlen(repo_prefix) + 1 + suffix_len + 1, "%s/Tupfile", repo_prefix);
 		} else if(pkg[pkg_len-1] == '/') {
-			snprintf(normalized_file, prefix_len + 1 + suffix_len + 1, "%s/%sTupfile", root_prefix.s, pkg);
+			snprintf(normalized_file, strlen(repo_prefix) + 1 + suffix_len + 1, "%s/%sTupfile", repo_prefix, pkg);
 		} else {
-			snprintf(normalized_file, prefix_len + 1 + suffix_len + 1, "%s/%s/Tupfile", root_prefix.s, pkg);
+			snprintf(normalized_file, strlen(repo_prefix) + 1 + suffix_len + 1, "%s/%s/Tupfile", repo_prefix, pkg);
 		}
+		free(repo_prefix);
+		free(repo_root);
 		resolved_file = normalized_file;
 	}
 	if(get_path_elements(resolved_file, &pg) < 0)
@@ -4652,8 +4802,8 @@ out_pel:
 out_pg:
 	del_pel_group(&pg);
 out:
-	free(root_prefix.s);
 	free(normalized_file);
+	free(current_repo_root);
 	return rc;
 }
 
