@@ -3730,10 +3730,10 @@ static int glob_root_from_pattern(const char *pattern, char **out)
 static int eval_abs_one_path(struct tupfile *tf, const char *path, int path_from_caller_root,
 			     struct estring *e, int *first)
 {
+	char *canon = NULL;
 	char cwd[PATH_MAX];
 	char base[PATH_MAX];
 	char *joined = NULL;
-	char *canon = NULL;
 	struct tup_build_ctx *ctx = tf->func_frame ? tf->func_frame->build_ctx : NULL;
 
 	if(is_full_path(path)) {
@@ -3776,6 +3776,32 @@ static int eval_abs_one_path(struct tupfile *tf, const char *path, int path_from
 				snprintf(joined, strlen(get_tup_top()) + strlen(cwd) + strlen(path) + 3, "%s/%s/%s", get_tup_top(), cwd, path);
 		}
 	}
+	if(canonicalize_path_simple(joined, &canon) < 0) {
+		free(joined);
+		return -1;
+	}
+	if(!*first) {
+		if(estring_append(e, " ", 1) < 0) {
+			free(joined);
+			free(canon);
+			return -1;
+		}
+	}
+	if(estring_append(e, canon, strlen(canon)) < 0) {
+		free(joined);
+		free(canon);
+		return -1;
+	}
+	*first = 0;
+	free(joined);
+	free(canon);
+	return 0;
+}
+
+static int eval_append_joined_path(struct estring *e, int *first, char *joined)
+{
+	char *canon = NULL;
+
 	if(canonicalize_path_simple(joined, &canon) < 0) {
 		free(joined);
 		return -1;
@@ -4017,36 +4043,42 @@ static int eval_globs_function(struct tupfile *tf, const char *args, int argslen
 	return 0;
 }
 
-static int eval_groups_append_path(struct tup_entry *tent, const char *path, int pathlen,
+static int eval_groups_append_path(struct tupfile *tf, struct tup_entry *tent,
+				   const char *path, int pathlen,
 				   struct estring *e, int *first)
 {
-	if(!*first) {
-		if(estring_append(e, " ", 1) < 0)
-			return -1;
-	}
-	if(estring_append(e, get_tup_top(), get_tup_top_len()) < 0)
-		return -1;
+	char *joined;
+
 	if(tent) {
 		char fullpath[PATH_MAX];
 		int rc;
 
 		rc = snprint_tup_entry(fullpath, sizeof(fullpath), tent);
 		if(rc >= (int)sizeof(fullpath)) {
-			fprintf(stderr, "tup error: Bin output path is too long.\n");
+			fprintf(tf->f, "tup error: Bin output path is too long.\n");
 			return -1;
 		}
-		if(estring_append(e, fullpath, rc) < 0)
+		joined = malloc(get_tup_top_len() + rc + 1);
+		if(!joined) {
+			perror("malloc");
 			return -1;
+		}
+		snprintf(joined, get_tup_top_len() + rc + 1, "%s%.*s", get_tup_top(), rc, fullpath);
 	} else {
-		if(!is_full_path(path)) {
-			if(estring_append(e, "/", 1) < 0)
-				return -1;
-		}
-		if(estring_append(e, path, pathlen) < 0)
+		int path_is_absolute = is_full_path(path);
+
+		joined = malloc(get_tup_top_len() + pathlen + (path_is_absolute ? 1 : 2));
+		if(!joined) {
+			perror("malloc");
 			return -1;
+		}
+		if(path_is_absolute)
+			snprintf(joined, get_tup_top_len() + pathlen + 1, "%.*s", pathlen, path);
+		else
+			snprintf(joined, get_tup_top_len() + pathlen + 2, "%s/%.*s", get_tup_top(), pathlen, path);
 	}
-	*first = 0;
-	return 0;
+
+	return eval_append_joined_path(e, first, joined);
 }
 
 static int eval_groups_one(struct tupfile *tf, const char *group, int grouplen,
@@ -4069,7 +4101,7 @@ static int eval_groups_one(struct tupfile *tf, const char *group, int grouplen,
 		return -1;
 	}
 	TAILQ_FOREACH(be, &b->entries, list) {
-		if(eval_groups_append_path(be->tent, be->path, be->len, e, first) < 0)
+		if(eval_groups_append_path(tf, be->tent, be->path, be->len, e, first) < 0)
 			return -1;
 	}
 	return 0;
