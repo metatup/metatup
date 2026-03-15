@@ -80,6 +80,12 @@ struct tup_function {
 
 struct tup_function_registry {
 	struct string_entries root;
+	struct string_entries loaded_files;
+	struct string_entries seen_names;
+};
+
+struct loaded_function_file {
+	struct string_tree st;
 };
 
 struct tup_func_frame {
@@ -208,6 +214,7 @@ static int parse_function_definition(struct tupfile *tf, char *line, const char 
 static int skip_curly_block(char **pp, char *e, int *lno, char **body_start, int *body_len);
 static int line_starts_with_trimmed(const char *line, int len, const char *prefix);
 static int line_is_trimmed_close_brace(const char *line, int len);
+static int parse_include_path_literal(const char *text, char **out);
 static int parse_quoted_string(const char **sp, char **out);
 static int parse_simple_fbind_var(const char *text, char **out);
 static int parse_materialize_args(struct tupfile *tf, const char *text, char **spec, char **root,
@@ -427,6 +434,9 @@ int parse(struct node *n, struct graph *g, struct timespan *retts, int refactori
 	tf.in_rules_block = 0;
 	tf.function_registry = NULL;
 	tf.func_frame = NULL;
+	tf.function_rel_dir_override = NULL;
+	tf.function_registry_error = 0;
+	tf.allow_function_includes = 0;
 	tf.ign = 0;
 	tf.circular_dep_error = 0;
 	LIST_INIT(&tf.bin_list);
@@ -860,6 +870,32 @@ static int line_is_trimmed_close_brace(const char *line, int len)
 	return len == 1 && line[0] == '}';
 }
 
+static int parse_include_path_literal(const char *text, char **out)
+{
+	const char *s = text;
+	const char *start;
+	const char *end;
+
+	*out = NULL;
+	while(isspace((unsigned char)*s))
+		s++;
+	if(*s == '"')
+		return parse_quoted_string(&s, out);
+
+	start = s;
+	end = s + strlen(s);
+	while(end > start && isspace((unsigned char)end[-1]))
+		end--;
+	if(start == end)
+		return -1;
+	*out = strndup(start, end - start);
+	if(!*out) {
+		perror("strndup");
+		return -1;
+	}
+	return 0;
+}
+
 static int skip_curly_block(char **pp, char *e, int *lno, char **body_start, int *body_len)
 {
 	char *p = *pp;
@@ -927,6 +963,8 @@ static int skip_curly_block(char **pp, char *e, int *lno, char **body_start, int
 static int function_registry_init(struct tup_function_registry *reg)
 {
 	RB_INIT(&reg->root);
+	RB_INIT(&reg->loaded_files);
+	RB_INIT(&reg->seen_names);
 	return 0;
 }
 
@@ -942,7 +980,36 @@ static void free_function_registry(struct tup_function_registry *reg)
 		free(fn->body);
 		free(fn);
 	}
+	while((st = RB_ROOT(&reg->loaded_files)) != NULL) {
+		struct loaded_function_file *lf = container_of(st, struct loaded_function_file, st);
+		string_tree_remove(&reg->loaded_files, &lf->st);
+		free(lf);
+	}
+	while((st = RB_ROOT(&reg->seen_names)) != NULL) {
+		string_tree_remove(&reg->seen_names, st);
+		free(st);
+	}
 	free(reg);
+}
+
+static int function_registry_mark_loaded_file(struct tup_function_registry *reg, const char *path)
+{
+	struct loaded_function_file *lf;
+
+	if(string_tree_search(&reg->loaded_files, path, strlen(path)) != NULL)
+		return 1;
+
+	lf = malloc(sizeof *lf);
+	if(!lf) {
+		perror("malloc");
+		return -1;
+	}
+	if(string_tree_add(&reg->loaded_files, &lf->st, path) < 0) {
+		free(lf);
+		fprintf(stderr, "tup internal error: unable to add loaded function file '%s'.\n", path);
+		return -1;
+	}
+	return 0;
 }
 
 static int parse_function_definition(struct tupfile *tf, char *line, const char *body, int body_len, int lno)
@@ -970,8 +1037,19 @@ static int parse_function_definition(struct tupfile *tf, char *line, const char 
 	if(name[0] == 0)
 		return SYNTAX_ERROR;
 
-	st = string_tree_search(&tf->function_registry->root, name, strlen(name));
-	if(st) {
+	if(string_tree_search(&tf->function_registry->seen_names, name, strlen(name)) != NULL) {
+		tf->function_registry_error = 1;
+		fprintf(tf->f, "tup error: Duplicate function '%s'.\n", name);
+		return -1;
+	}
+	st = malloc(sizeof *st);
+	if(!st) {
+		perror("malloc");
+		return -1;
+	}
+	if(string_tree_add(&tf->function_registry->seen_names, st, name) < 0) {
+		free(st);
+		tf->function_registry_error = 1;
 		fprintf(tf->f, "tup error: Duplicate function '%s'.\n", name);
 		return -1;
 	}
@@ -1047,7 +1125,25 @@ static int scan_tupfile_functions(struct tupfile *tf, struct buf *b, const char 
 		trim = line;
 		while(isspace(*trim))
 			trim++;
-		if(strncmp(trim, "function ", 9) == 0) {
+		if(tf->allow_function_includes && strncmp(trim, "include ", 8) == 0) {
+			char *include_file = NULL;
+			struct tup_entry *oldtent = NULL;
+			int old_dfd = -1;
+			struct tup_entry *loadedtent = NULL;
+
+			if(parse_include_path_literal(trim + 8, &include_file) < 0) {
+				free(scan);
+				fprintf(tf->f, "tup error: Invalid include filename: '%s'\n", trim + 8);
+				return -1;
+			}
+			if(load_function_file(tf, include_file, tf->function_registry, &oldtent, &old_dfd, &loadedtent) < 0) {
+				free(include_file);
+				free(scan);
+				return -1;
+			}
+			restore_loaded_function_file(tf, oldtent, old_dfd);
+			free(include_file);
+		} else if(strncmp(trim, "function ", 9) == 0) {
 			if(skip_curly_block(&p, e, &lno, &body, &body_len) < 0) {
 				free(scan);
 				fprintf(tf->f, "tup error: Function block missing closing brace in %s.\n", filename);
@@ -1075,7 +1171,7 @@ static int parse_tupfile(struct tupfile *tf, struct buf *b, const char *filename
 	if_init(&ifs);
 
 	if(tf->function_registry && !tf->in_function_body && !tf->in_rules_block)
-		if(scan_tupfile_functions(tf, b, filename) < 0)
+		if(scan_tupfile_functions(tf, b, filename) < 0 || tf->function_registry_error)
 			return -1;
 
 	p = b->s;
@@ -2120,6 +2216,7 @@ int parser_include_file(struct tupfile *tf, const char *file)
 	struct tup_entry *srctent = NULL;
 	struct tup_entry *newtent;
 	const char *lua;
+	int old_allow_function_includes = tf->allow_function_includes;
 
 	if(get_path_elements(file, &pg) < 0)
 		goto out_err;
@@ -2179,11 +2276,13 @@ int parser_include_file(struct tupfile *tf, const char *file)
 			goto out_free;
 		}
 		function_registry_init(tf->function_registry);
+		tf->allow_function_includes = 0;
 		if(parse_tupfile(tf, &incb, file) < 0)
 			goto out_free;
 	}
 	rc = 0;
 out_free:
+	tf->allow_function_includes = old_allow_function_includes;
 	if(tf->function_registry != old_registry) {
 		free_function_registry(tf->function_registry);
 		tf->function_registry = old_registry;
@@ -4694,15 +4793,25 @@ static int load_function_file(struct tupfile *tf, const char *file, struct tup_f
 	char *normalized_file = NULL;
 	char *direct_file_abs = NULL;
 	char *direct_dir_abs = NULL;
+	char *new_function_rel_dir = NULL;
+	char *old_function_rel_dir = tf->function_rel_dir_override;
+	char *loaded_key = NULL;
 	const char *resolved_file = file;
 	char *current_repo_root = NULL;
 	int allow_hidden = 0;
+	int old_allow_function_includes = tf->allow_function_includes;
 	int rc = -1;
 
 	*oldtent = tf->curtent;
 	*old_dfd = tf->cur_dfd;
 	newdt = tf->curtent->tnode.tupid;
-	if(tf->curtent && tf->curtent->tnode.tupid != DOT_DT) {
+	if(tf->function_rel_dir_override) {
+		if(snprintf(current_path, sizeof(current_path), "%s", tf->function_rel_dir_override) >= (int)sizeof(current_path)) {
+			fprintf(tf->f, "tup error: Current function directory is too long.\n");
+			goto out;
+		}
+		current_repo_root = metatup_repo_rel_root_from_path(get_tup_top(), current_path);
+	} else if(tf->curtent && tf->curtent->tnode.tupid != DOT_DT) {
 		if(snprint_tup_entry(current_path, sizeof(current_path), tf->curtent) >= (signed)sizeof(current_path)) {
 			fprintf(tf->f, "tup error: Current function directory is too long.\n");
 			goto out;
@@ -4741,7 +4850,7 @@ static int load_function_file(struct tupfile *tf, const char *file, struct tup_f
 			}
 			{
 				char *repo_base = current_repo_root[0] ? malloc(strlen(get_tup_top()) + strlen(current_repo_root) + 2) : strdup(get_tup_top());
-				char current_abs[PATH_MAX];
+				char *current_abs = NULL;
 				if(!repo_base) {
 					perror("malloc");
 					free(repo_name);
@@ -4758,15 +4867,23 @@ static int load_function_file(struct tupfile *tf, const char *file, struct tup_f
 				}
 				free(repo_base);
 				if(current_dir_rel[0]) {
-					snprintf(current_abs, sizeof(current_abs), "%s/%s", get_tup_top(), current_dir_rel);
+					current_abs = join_path2(get_tup_top(), current_dir_rel);
 				} else {
-					snprintf(current_abs, sizeof(current_abs), "%s", get_tup_top());
+					current_abs = strdup(get_tup_top());
 				}
-				if(relpath_simple(current_abs, repo_root, &repo_prefix) < 0) {
+				if(!current_abs) {
+					perror("malloc");
 					free(repo_name);
 					free(repo_root);
 					goto out;
 				}
+				if(relpath_simple(current_abs, repo_root, &repo_prefix) < 0) {
+					free(current_abs);
+					free(repo_name);
+					free(repo_root);
+					goto out;
+				}
+				free(current_abs);
 			}
 			pkg = slashes + 2;
 			allow_hidden = 1;
@@ -4853,6 +4970,29 @@ static int load_function_file(struct tupfile *tf, const char *file, struct tup_f
 	if(get_path_elements(resolved_file, &pg) < 0)
 		goto out;
 	if(direct_file_abs) {
+		if(strncmp(direct_dir_abs, get_tup_top(), strlen(get_tup_top())) == 0) {
+			const char *rel = direct_dir_abs + strlen(get_tup_top());
+			while(*rel == '/')
+				rel++;
+			new_function_rel_dir = strdup(rel);
+			if(!new_function_rel_dir) {
+				perror("strdup");
+				goto out_pg;
+			}
+			tf->function_rel_dir_override = new_function_rel_dir;
+		}
+		loaded_key = strdup(direct_file_abs);
+		if(!loaded_key) {
+			perror("strdup");
+			goto out_pg;
+		}
+		rc = function_registry_mark_loaded_file(reg, loaded_key);
+		if(rc < 0)
+			goto out_pg;
+		if(rc > 0) {
+			rc = 0;
+			goto out_pg;
+		}
 		fd = open(direct_file_abs, O_RDONLY);
 		if(fd < 0) {
 			parser_error(tf, direct_file_abs);
@@ -4864,9 +5004,10 @@ static int load_function_file(struct tupfile *tf, const char *file, struct tup_f
 			goto out_fd;
 		}
 		tf->function_registry = reg;
+		tf->allow_function_includes = 1;
 		if(fslurp_null(fd, &incb) < 0)
 			goto out_dfd;
-		if(scan_tupfile_functions(tf, &incb, file) < 0)
+		if(scan_tupfile_functions(tf, &incb, file) < 0 || tf->function_registry_error)
 			goto out_buf;
 		rc = 0;
 		goto out_buf;
@@ -4894,6 +5035,26 @@ static int load_function_file(struct tupfile *tf, const char *file, struct tup_f
 		fprintf(tf->f, "tup error: Unable to find function file '%s'.\n", file);
 		goto out_pel;
 	}
+	{
+		char path[PATH_MAX];
+		int len = snprint_tup_entry(path, sizeof(path), tent);
+		if(len < 0 || len >= (int)sizeof(path)) {
+			fprintf(tf->f, "tup error: Function file path is too long.\n");
+			goto out_pel;
+		}
+		loaded_key = strdup(path[0] == '/' ? path + 1 : path);
+		if(!loaded_key) {
+			perror("strdup");
+			goto out_pel;
+		}
+		rc = function_registry_mark_loaded_file(reg, loaded_key);
+		if(rc < 0)
+			goto out_pel;
+		if(rc > 0) {
+			rc = 0;
+			goto out_pel;
+		}
+	}
 	*loadedtent = newtent;
 	tf->cur_dfd = tup_entry_openat(tf->root_fd, tent->parent);
 	if(tf->cur_dfd < 0) {
@@ -4906,10 +5067,12 @@ static int load_function_file(struct tupfile *tf, const char *file, struct tup_f
 	if(fslurp_null(fd, &incb) < 0)
 		goto out_fd;
 	tf->function_registry = reg;
-	if(scan_tupfile_functions(tf, &incb, file) < 0)
+	tf->allow_function_includes = 1;
+	if(scan_tupfile_functions(tf, &incb, file) < 0 || tf->function_registry_error)
 		goto out_buf;
 	rc = 0;
 out_buf:
+	tf->allow_function_includes = old_allow_function_includes;
 	free(incb.s);
 out_fd:
 	if(fd >= 0)
@@ -4922,8 +5085,12 @@ out_pel:
 out_pg:
 	del_pel_group(&pg);
 out:
+	tf->allow_function_includes = old_allow_function_includes;
+	tf->function_rel_dir_override = old_function_rel_dir;
 	free(direct_file_abs);
 	free(direct_dir_abs);
+	free(loaded_key);
+	free(new_function_rel_dir);
 	free(normalized_file);
 	free(current_repo_root);
 	return rc;

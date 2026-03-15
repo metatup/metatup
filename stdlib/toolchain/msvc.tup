@@ -1,0 +1,87 @@
+function _msvc_compile_c {
+  bind cc := "toolchain/cc" || cl
+  bind sources := "sources"
+  bind objdir := "objdir"
+  bind common_flags := "flags/common"
+  bind lang_flags := "flags/c"
+  bind brdir := "brdir" || .
+
+  rules {
+    !compile_c = |> ^jc CC %o^ $(cc) /nologo $(common_flags) $(lang_flags) /c %f /Fo%o |>
+  }
+
+  : foreach $(sources) |> !compile_c |> $(brdir)/$(objdir)/%B.obj {objects}
+
+  return { "objects": "$(groups {objects})" }
+}
+
+function _msvc_compile_cxx {
+  bind cxx := "toolchain/cxx" || cl
+  bind sources := "sources"
+  bind objdir := "objdir"
+  bind common_flags := "flags/common"
+  bind lang_flags := "flags/cxx"
+  bind brdir := "brdir" || .
+
+  rules {
+    !compile_cxx = |> ^jc CXX %o^ $(cxx) /nologo $(common_flags) $(lang_flags) /c %f /Fo%o |>
+  }
+
+  : foreach $(sources) |> !compile_cxx |> $(brdir)/$(objdir)/%B.obj {objects}
+
+  return { "objects": "$(groups {objects})" }
+}
+
+function _msvc_link_binary {
+  bind linker := "toolchain/linker" || link
+  bind inputs0 := "inputs/0"
+  bind inputs1 := "inputs/1"
+  bind inputs2 := "inputs/2"
+  bind output := "output"
+  bind link_flags := "flags/ld_exe"
+  bind brdir := "brdir" || .
+
+  rules {
+    !link_exe = |> ^c LINK_EXE %o ^ $(linker) /nologo $(link_flags) /OUT:%o %f |>
+  }
+
+  : $(inputs0) $(inputs1) $(inputs2) |> !link_exe |> $(brdir)/$(output) {bin}
+
+  return { "bin": "$(groups {bin})" }
+}
+
+function _msvc_link_shared_library {
+  bind linker := "toolchain/linker" || link
+  bind inputs0 := "inputs/0"
+  bind inputs1 := "inputs/1"
+  bind inputs2 := "inputs/2"
+  bind output := "output"
+  bind link_flags := "flags/ld_shared"
+  bind brdir := "brdir" || .
+
+  rules {
+    !link_dll = |> ^c LINK_DLL %o ^ $(linker) /nologo /DLL $(link_flags) /OUT:%o %f |>
+  }
+
+  : $(inputs0) $(inputs1) $(inputs2) |> !link_dll |> $(brdir)/$(output) {lib}
+
+  return { "lib": "$(groups {lib})" }
+}
+
+function _msvc_archive_static_library {
+  bind ar := "toolchain/ar" || lib
+  bind inputs0 := "inputs/0"
+  bind inputs1 := "inputs/1"
+  bind inputs2 := "inputs/2"
+  bind output := "output"
+  bind archive_flags := "flags/ar"
+  bind brdir := "brdir" || .
+
+  rules {
+    !archive = |> ^c AR %o ^ $(ar) /nologo $(archive_flags) /OUT:%o %f |>
+  }
+
+  : $(inputs0) $(inputs1) $(inputs2) |> !archive |> $(brdir)/$(output) {lib}
+
+  return { "lib": "$(groups {lib})" }
+}

@@ -1,0 +1,96 @@
+function _gcc_like_compile_c {
+  bind cc := "toolchain/cc" || cc
+  bind sources := "sources"
+  bind objdir := "objdir"
+  bind common_flags := "flags/common"
+  bind lang_flags := "flags/c"
+  bind brdir := "brdir" || .
+
+  rules {
+    !compile_c = |> ^jc CC %o^ $(cc) $(common_flags) $(lang_flags) -c %f -o %o |>
+  }
+
+  : foreach $(sources) |> !compile_c |> $(brdir)/$(objdir)/%B.o {objects}
+
+  return { "objects": "$(groups {objects})" }
+}
+
+function _gcc_like_compile_cxx {
+  bind cxx := "toolchain/cxx" || c++
+  bind sources := "sources"
+  bind objdir := "objdir"
+  bind common_flags := "flags/common"
+  bind lang_flags := "flags/cxx"
+  bind brdir := "brdir" || .
+
+  rules {
+    !compile_cxx = |> ^jc CXX %o^ $(cxx) $(common_flags) $(lang_flags) -c %f -o %o |>
+  }
+
+  : foreach $(sources) |> !compile_cxx |> $(brdir)/$(objdir)/%B.o {objects}
+
+  return { "objects": "$(groups {objects})" }
+}
+
+function _gcc_like_link_binary {
+  bind linker := "toolchain/linker" || c++
+  bind inputs0 := "inputs/0"
+  bind inputs1 := "inputs/1"
+  bind inputs2 := "inputs/2"
+  bind output := "output"
+  bind common_flags := "flags/common"
+  bind link_flags := "flags/ld_exe"
+  bind brdir := "brdir" || .
+
+  rules {
+    !link_exe = |> ^c LINK_EXE %o ^ $(linker) $(common_flags) $(link_flags) %f -o %o |>
+  }
+
+  : $(inputs0) $(inputs1) $(inputs2) |> !link_exe |> $(brdir)/$(output) {bin}
+
+  return { "bin": "$(groups {bin})" }
+}
+
+function _gcc_like_link_shared_library {
+  bind linker := "toolchain/linker" || c++
+  bind inputs0 := "inputs/0"
+  bind inputs1 := "inputs/1"
+  bind inputs2 := "inputs/2"
+  bind output := "output"
+  bind os := "toolchain/os" || linux
+  bind common_flags := "flags/common"
+  bind link_flags := "flags/ld_shared"
+  bind brdir := "brdir" || .
+
+  ifeq ($(os),macos)
+    rules {
+      !link_so = |> ^c LINK_DYLIB %o ^ $(linker) $(common_flags) $(link_flags) %f -o %o |>
+    }
+  else
+    rules {
+      !link_so = |> ^c LINK_SO %o ^ $(linker) $(common_flags) $(link_flags) -shared %f -o %o |>
+    }
+  endif
+
+  : $(inputs0) $(inputs1) $(inputs2) |> !link_so |> $(brdir)/$(output) {lib}
+
+  return { "lib": "$(groups {lib})" }
+}
+
+function _gcc_like_archive_static_library {
+  bind ar := "toolchain/ar" || ar
+  bind inputs0 := "inputs/0"
+  bind inputs1 := "inputs/1"
+  bind inputs2 := "inputs/2"
+  bind output := "output"
+  bind archive_flags := "flags/ar"
+  bind brdir := "brdir" || .
+
+  rules {
+    !archive = |> ^c AR %o ^ $(ar) rcs $(archive_flags) %o %f |>
+  }
+
+  : $(inputs0) $(inputs1) $(inputs2) |> !archive |> $(brdir)/$(output) {lib}
+
+  return { "lib": "$(groups {lib})" }
+}

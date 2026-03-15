@@ -1,0 +1,35 @@
+function _binary_output {
+  bind name := "name"
+  bind os := "toolchain/os" || linux
+
+  ifeq ($(os),windows)
+    return { "output": "$(name).exe" }
+  endif
+
+  return { "output": "$(name)" }
+}
+
+function _shared_library_output {
+  bind name := "name"
+  bind os := "toolchain/os" || linux
+
+  ifeq ($(os),windows)
+    return { "output": "$(name).dll" }
+  endif
+  ifeq ($(os),macos)
+    return { "output": "lib$(name).dylib" }
+  endif
+
+  return { "output": "lib$(name).so" }
+}
+
+function _static_library_output {
+  bind name := "name"
+  bind os := "toolchain/os" || linux
+
+  ifeq ($(os),windows)
+    return { "output": "$(name).lib" }
+  endif
+
+  return { "output": "lib$(name).a" }
+}

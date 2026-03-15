@@ -1,0 +1,139 @@
+include ./paths.tup
+
+function binary {
+  bind name := "native/binary/name"
+  bind c_sources := "native/binary/c/sources"
+  bind cxx_sources := "native/binary/cxx/sources"
+  bind extra_objects := "native/binary/objects"
+  bind family := "toolchain/family" || gcc
+  bind cc := "toolchain/cc" || cc
+  bind cxx := "toolchain/cxx" || c++
+  bind linker := "toolchain/linker" || c++
+  bind common_flags := "flags/common"
+  bind c_flags := "flags/c"
+  bind cxx_flags := "flags/cxx"
+  bind link_flags := "flags/ld_exe"
+  bind brdir := "brdir" || .
+
+  fbind { "output": output } := call _binary_output({
+    ...,
+    "name": "$(name)"
+  })
+
+  ifeq ($(family),msvc)
+    OBJEXT = obj
+    rules {
+      !compile_c = |> ^jc CC %o^ $(cc) /nologo $(common_flags) $(c_flags) /c %f /Fo%o |>
+      !compile_cxx = |> ^jc CXX %o^ $(cxx) /nologo $(common_flags) $(cxx_flags) /c %f /Fo%o |>
+      !link_exe = |> ^c LINK_EXE %o ^ $(linker) /nologo $(link_flags) /OUT:%o %f |>
+    }
+  else
+    OBJEXT = o
+    rules {
+      !compile_c = |> ^jc CC %o^ $(cc) $(common_flags) $(c_flags) -c %f -o %o |>
+      !compile_cxx = |> ^jc CXX %o^ $(cxx) $(common_flags) $(cxx_flags) -c %f -o %o |>
+      !link_exe = |> ^c LINK_EXE %o ^ $(linker) $(common_flags) $(link_flags) %f -o %o |>
+    }
+  endif
+
+  : foreach $(c_sources) |> !compile_c |> $(brdir)/$(name).objs/c/%B.$(OBJEXT) {c_objects}
+  : foreach $(cxx_sources) |> !compile_cxx |> $(brdir)/$(name).objs/cxx/%B.$(OBJEXT) {cxx_objects}
+  : $(extra_objects) {c_objects} {cxx_objects} |> !link_exe |> $(brdir)/$(output) {bin}
+
+  return { "bin": "$(groups {bin})" }
+}
+
+function shared_library {
+  bind name := "native/shared_library/name"
+  bind c_sources := "native/shared_library/c/sources"
+  bind cxx_sources := "native/shared_library/cxx/sources"
+  bind extra_objects := "native/shared_library/objects"
+  bind family := "toolchain/family" || gcc
+  bind os := "toolchain/os" || linux
+  bind cc := "toolchain/cc" || cc
+  bind cxx := "toolchain/cxx" || c++
+  bind linker := "toolchain/linker" || c++
+  bind common_flags := "flags/common"
+  bind c_flags := "flags/c"
+  bind cxx_flags := "flags/cxx"
+  bind link_flags := "flags/ld_shared"
+  bind brdir := "brdir" || .
+
+  fbind { "output": output } := call _shared_library_output({
+    ...,
+    "name": "$(name)"
+  })
+
+  ifeq ($(family),msvc)
+    OBJEXT = obj
+    rules {
+      !compile_c = |> ^jc CC %o^ $(cc) /nologo $(common_flags) $(c_flags) /c %f /Fo%o |>
+      !compile_cxx = |> ^jc CXX %o^ $(cxx) /nologo $(common_flags) $(cxx_flags) /c %f /Fo%o |>
+      !link_lib = |> ^c LINK_DLL %o ^ $(linker) /nologo /DLL $(link_flags) /OUT:%o %f |>
+    }
+  else
+    OBJEXT = o
+    ifeq ($(os),macos)
+      rules {
+        !compile_c = |> ^jc CC %o^ $(cc) $(common_flags) $(c_flags) -c %f -o %o |>
+        !compile_cxx = |> ^jc CXX %o^ $(cxx) $(common_flags) $(cxx_flags) -c %f -o %o |>
+        !link_lib = |> ^c LINK_DYLIB %o ^ $(linker) $(common_flags) $(link_flags) %f -o %o |>
+      }
+    else
+      rules {
+        !compile_c = |> ^jc CC %o^ $(cc) $(common_flags) $(c_flags) -c %f -o %o |>
+        !compile_cxx = |> ^jc CXX %o^ $(cxx) $(common_flags) $(cxx_flags) -c %f -o %o |>
+        !link_lib = |> ^c LINK_SO %o ^ $(linker) $(common_flags) $(link_flags) -shared %f -o %o |>
+      }
+    endif
+  endif
+
+  : foreach $(c_sources) |> !compile_c |> $(brdir)/$(name).objs/c/%B.$(OBJEXT) {c_objects}
+  : foreach $(cxx_sources) |> !compile_cxx |> $(brdir)/$(name).objs/cxx/%B.$(OBJEXT) {cxx_objects}
+  : $(extra_objects) {c_objects} {cxx_objects} |> !link_lib |> $(brdir)/$(output) {lib}
+
+  return { "lib": "$(groups {lib})" }
+}
+
+function static_library {
+  bind name := "native/static_library/name"
+  bind c_sources := "native/static_library/c/sources"
+  bind cxx_sources := "native/static_library/cxx/sources"
+  bind extra_objects := "native/static_library/objects"
+  bind family := "toolchain/family" || gcc
+  bind cc := "toolchain/cc" || cc
+  bind cxx := "toolchain/cxx" || c++
+  bind ar := "toolchain/ar" || ar
+  bind common_flags := "flags/common"
+  bind c_flags := "flags/c"
+  bind cxx_flags := "flags/cxx"
+  bind archive_flags := "flags/ar"
+  bind brdir := "brdir" || .
+
+  fbind { "output": output } := call _static_library_output({
+    ...,
+    "name": "$(name)"
+  })
+
+  ifeq ($(family),msvc)
+    OBJEXT = obj
+    rules {
+      !compile_c = |> ^jc CC %o^ $(cc) /nologo $(common_flags) $(c_flags) /c %f /Fo%o |>
+      !compile_cxx = |> ^jc CXX %o^ $(cxx) /nologo $(common_flags) $(cxx_flags) /c %f /Fo%o |>
+      !archive = |> ^c AR %o ^ $(ar) /nologo $(archive_flags) /OUT:%o %f |>
+    }
+  else
+    OBJEXT = o
+    rules {
+      !compile_c = |> ^jc CC %o^ $(cc) $(common_flags) $(c_flags) -c %f -o %o |>
+      !compile_cxx = |> ^jc CXX %o^ $(cxx) $(common_flags) $(cxx_flags) -c %f -o %o |>
+      !archive = |> ^c AR %o ^ $(ar) rcs $(archive_flags) %o %f |>
+    }
+  endif
+
+  : foreach $(c_sources) |> !compile_c |> $(brdir)/$(name).objs/c/%B.$(OBJEXT) {c_objects}
+  : foreach $(cxx_sources) |> !compile_cxx |> $(brdir)/$(name).objs/cxx/%B.$(OBJEXT) {cxx_objects}
+  : $(extra_objects) {c_objects} {cxx_objects} |> !archive |> $(brdir)/$(output) {lib}
+
+  return { "lib": "$(groups {lib})" }
+}

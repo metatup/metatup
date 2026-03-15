@@ -1,0 +1,62 @@
+include ./gcc.tup
+include ./msvc.tup
+
+function compile_c {
+  bind family := "toolchain/family" || gcc
+
+  ifeq ($(family),msvc)
+    fbind { "objects": objects } := call _msvc_compile_c({ ..., })
+  else
+    fbind { "objects": objects } := call _gcc_like_compile_c({ ..., })
+  endif
+
+  return { "objects": "$(objects)" }
+}
+
+function compile_cxx {
+  bind family := "toolchain/family" || gcc
+
+  ifeq ($(family),msvc)
+    fbind { "objects": objects } := call _msvc_compile_cxx({ ..., })
+  else
+    fbind { "objects": objects } := call _gcc_like_compile_cxx({ ..., })
+  endif
+
+  return { "objects": "$(objects)" }
+}
+
+function link_binary {
+  bind family := "toolchain/family" || gcc
+
+  ifeq ($(family),msvc)
+    fbind { "bin": bin } := call _msvc_link_binary({ ..., })
+  else
+    fbind { "bin": bin } := call _gcc_like_link_binary({ ..., })
+  endif
+
+  return { "bin": "$(bin)" }
+}
+
+function link_shared_library {
+  bind family := "toolchain/family" || gcc
+
+  ifeq ($(family),msvc)
+    fbind { "lib": lib } := call _msvc_link_shared_library({ ..., })
+  else
+    fbind { "lib": lib } := call _gcc_like_link_shared_library({ ..., })
+  endif
+
+  return { "lib": "$(lib)" }
+}
+
+function archive_static_library {
+  bind family := "toolchain/family" || gcc
+
+  ifeq ($(family),msvc)
+    fbind { "lib": lib } := call _msvc_archive_static_library({ ..., })
+  else
+    fbind { "lib": lib } := call _gcc_like_archive_static_library({ ..., })
+  endif
+
+  return { "lib": "$(lib)" }
+}

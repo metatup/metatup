@@ -1,0 +1,12 @@
+function compile {
+  bind sources := "cxx/sources"
+  bind objdir := "cxx/objdir"
+
+  fbind { "objects": objects } := call "@std//toolchain" compile_cxx({
+    ...,
+    "sources": "$(sources)",
+    "objdir": "$(objdir)"
+  })
+
+  return { "objects": "$(objects)" }
+}

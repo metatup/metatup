@@ -78,6 +78,9 @@ struct tupfile {
 	int in_rules_block;
 	struct tup_function_registry *function_registry;
 	struct tup_func_frame *func_frame;
+	char *function_rel_dir_override;
+	int function_registry_error;
+	int allow_function_includes;
 
 	SLIST_ENTRY(tupfile) list;
 };
