@@ -1,7 +1,7 @@
 function install_manifest {
-  bind exe := "vcpkg/exe"
-  bind manifest_dir := "vcpkg/manifest_dir"
-  bind manifest_inputs := "vcpkg/manifest_inputs"
+  bind exe := "vcpkg/exe" || vcpkg
+  bind manifest_dir := "vcpkg/manifest_dir" || .
+  bind manifest_inputs := "vcpkg/manifest_inputs" || "$(manifest_dir)/vcpkg.json"
   bind triplet := "vcpkg/triplet"
   bind export_dirs := "vcpkg/export_dirs" || ""
   bind export_files := "vcpkg/export_files" || ""
@@ -71,24 +71,21 @@ function install_host_manifest {
 }
 
 function install_host_package {
-  bind family := "toolchain/family" || gcc
-  bind posix_link_flags := "package/posix_link_flags" || ""
-  bind msvc_link_flags := "package/msvc_link_flags" || ""
+  bind export_dirs := "vcpkg/export_dirs" || "include lib"
 
   fbind {
+    "prefix": prefix,
     "include_dir": include_dir,
     "lib_dir": lib_dir
   }: pkg := call install_host_manifest({
     ...,
+    "vcpkg/export_dirs": "$(export_dirs)",
   })
 
-  fbind { }: flags := call "@std//toolchains" package_flags({
+  fbind flags := call "@std//toolchains" package_flags({
     ...,
-    "toolchain/family": "$(family)",
     "package/include_dir": "$(include_dir)",
     "package/lib_dir": "$(lib_dir)",
-    "package/posix_link_flags": "$(posix_link_flags)",
-    "package/msvc_link_flags": "$(msvc_link_flags)"
   })
 
   return {

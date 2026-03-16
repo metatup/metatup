@@ -5,10 +5,8 @@ fbind {
   "bin_dir": bin_dir,
   "stamp": stamp
 } := call "@std//vcpkg" install_manifest({
-  "brdir": "./build",
   "vcpkg/exe": "./fakevcpkg/vcpkg",
   "vcpkg/manifest_dir": "./manifest",
-  "vcpkg/manifest_inputs": "./manifest/vcpkg.json ./manifest/vcpkg-configuration.json",
   "vcpkg/triplet": "x64-linux",
   "vcpkg/export_files": "include/fake.h lib/libfake.a bin/fake-tool"
 })

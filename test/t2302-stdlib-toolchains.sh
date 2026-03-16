@@ -23,7 +23,6 @@ fbind { }: msvc_vals := call "@std//toolchains" msvc({})
 fbind { }: host_vals := call "@std//toolchains" host({})
 
 fbind { }: posix_pkg := call "@std//toolchains" package_flags({
-  "toolchain/family": "gcc",
   "package/include_dir": "/deps/include",
   "package/lib_dir": "/deps/lib",
   "package/posix_link_flags": "-lsqlite3"
@@ -58,7 +57,6 @@ call "@std//native" binary({
 })
 
 call "@std//native" binary({
-  ...host_vals,
   "native/binary/name": "hostapp",
   "native/binary/c/sources": "host.c"
 })

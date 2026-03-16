@@ -1,5 +1,5 @@
 function _build_marker {
-  bind brdir := "brdir"
+  bind brdir := "brdir" || .
   : |> echo stdlib > %o |> $(brdir)/_marker.txt
 
   return { "out": "$(brdir)/_marker.txt" }

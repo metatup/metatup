@@ -60,21 +60,57 @@ function msvc {
 }
 
 function package_flags {
-  bind family := "toolchain/family" || gcc
-  bind include_dir := "package/include_dir"
-  bind lib_dir := "package/lib_dir"
+  bind family := "toolchain/family" || ""
+  bind include_dir := "package/include_dir" || ""
+  bind lib_dir := "package/lib_dir" || ""
   bind posix_link_flags := "package/posix_link_flags" || ""
   bind msvc_link_flags := "package/msvc_link_flags" || ""
+  FAMILY = $(family)
+  INCLUDE_DIR = $(include_dir)
+  LIB_DIR = $(lib_dir)
+  POSIX_LINK_FLAGS = $(posix_link_flags)
+  MSVC_LINK_FLAGS = $(msvc_link_flags)
 
-  ifeq ($(family),msvc)
+  ifeq ($(FAMILY),)
+    ifeq (@(TUP_PLATFORM),win32)
+      FAMILY = msvc
+    else
+      FAMILY = gcc
+    endif
+  endif
+
+  ifeq ($(FAMILY),msvc)
+    CFLAGS =
+    LDFLAGS =
+    ifneq ($(INCLUDE_DIR),)
+      CFLAGS = /I$(INCLUDE_DIR)
+    endif
+    ifneq ($(LIB_DIR),)
+      LDFLAGS = /LIBPATH:$(LIB_DIR)
+    endif
+    ifneq ($(MSVC_LINK_FLAGS),)
+      LDFLAGS = $(LDFLAGS) $(MSVC_LINK_FLAGS)
+    endif
     return {
-      appending "flags/c": "/I$(include_dir)",
-      appending "flags/ld_exe": "/LIBPATH:$(lib_dir) $(msvc_link_flags)"
+      appending "flags/c": "$(CFLAGS)",
+      appending "flags/ld_exe": "$(LDFLAGS)"
     }
   endif
 
+  CFLAGS = 
+  LDFLAGS =
+  ifneq ($(INCLUDE_DIR),)
+    CFLAGS = -I$(INCLUDE_DIR)
+  endif
+  ifneq ($(LIB_DIR),)
+    LDFLAGS = -L$(LIB_DIR)
+  endif
+  ifneq ($(POSIX_LINK_FLAGS),)
+    LDFLAGS = $(LDFLAGS) $(POSIX_LINK_FLAGS)
+  endif
+
   return {
-    appending "flags/c": "-I$(include_dir)",
-    appending "flags/ld_exe": "-L$(lib_dir) $(posix_link_flags)"
+    appending "flags/c": "$(CFLAGS)",
+    appending "flags/ld_exe": "$(LDFLAGS)"
   }
 }

@@ -71,4 +71,4 @@ LDFLAGS += -Wl,--wrap=__mingw_vfprintf
 
 LDFLAGS += -Wl,-Bstatic -lpthread -Wl,-Bdynamic
 endif
-: $(srcs) src/lua/liblua.a third-party/libyaml.a |> ^ LINK %o^ ./src/tup/link.sh "$(CC)" "$(CFLAGS)" "$(LDFLAGS)" "%1o" "%2o" "%f" $(suid) |> metatup$(PROGRAM_SUFFIX) tup-version.o
+: $(srcs) src/lua/liblua.a third-party/libyaml.a |> ^j,allow_read=*.gitignore LINK %o^ ./src/tup/link.sh "$(CC)" "$(CFLAGS)" "$(LDFLAGS)" "%1o" "%2o" "%f" $(suid) |> metatup$(PROGRAM_SUFFIX) tup-version.o

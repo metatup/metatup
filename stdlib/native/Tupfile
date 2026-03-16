@@ -1,14 +1,21 @@
 include ./paths.tup
 
 function binary {
+  fbind {
+    "toolchain/family": default_family,
+    "toolchain/cc": default_cc,
+    "toolchain/cxx": default_cxx,
+    "toolchain/linker": default_linker
+  } := call "@std//toolchains" host({})
+
   bind name := "native/binary/name"
   bind c_sources := "native/binary/c/sources"
   bind cxx_sources := "native/binary/cxx/sources"
   bind extra_objects := "native/binary/objects"
-  bind family := "toolchain/family" || gcc
-  bind cc := "toolchain/cc" || cc
-  bind cxx := "toolchain/cxx" || c++
-  bind linker := "toolchain/linker" || c++
+  bind family := "toolchain/family" || $(default_family)
+  bind cc := "toolchain/cc" || $(default_cc)
+  bind cxx := "toolchain/cxx" || $(default_cxx)
+  bind linker := "toolchain/linker" || $(default_linker)
   bind common_flags := "flags/common"
   bind c_flags := "flags/c"
   bind cxx_flags := "flags/cxx"
@@ -44,15 +51,23 @@ function binary {
 }
 
 function shared_library {
+  fbind {
+    "toolchain/family": default_family,
+    "toolchain/os": default_os,
+    "toolchain/cc": default_cc,
+    "toolchain/cxx": default_cxx,
+    "toolchain/linker": default_linker
+  } := call "@std//toolchains" host({})
+
   bind name := "native/shared_library/name"
   bind c_sources := "native/shared_library/c/sources"
   bind cxx_sources := "native/shared_library/cxx/sources"
   bind extra_objects := "native/shared_library/objects"
-  bind family := "toolchain/family" || gcc
-  bind os := "toolchain/os" || linux
-  bind cc := "toolchain/cc" || cc
-  bind cxx := "toolchain/cxx" || c++
-  bind linker := "toolchain/linker" || c++
+  bind family := "toolchain/family" || $(default_family)
+  bind os := "toolchain/os" || $(default_os)
+  bind cc := "toolchain/cc" || $(default_cc)
+  bind cxx := "toolchain/cxx" || $(default_cxx)
+  bind linker := "toolchain/linker" || $(default_linker)
   bind common_flags := "flags/common"
   bind c_flags := "flags/c"
   bind cxx_flags := "flags/cxx"
@@ -96,14 +111,21 @@ function shared_library {
 }
 
 function static_library {
+  fbind {
+    "toolchain/family": default_family,
+    "toolchain/cc": default_cc,
+    "toolchain/cxx": default_cxx,
+    "toolchain/ar": default_ar
+  } := call "@std//toolchains" host({})
+
   bind name := "native/static_library/name"
   bind c_sources := "native/static_library/c/sources"
   bind cxx_sources := "native/static_library/cxx/sources"
   bind extra_objects := "native/static_library/objects"
-  bind family := "toolchain/family" || gcc
-  bind cc := "toolchain/cc" || cc
-  bind cxx := "toolchain/cxx" || c++
-  bind ar := "toolchain/ar" || ar
+  bind family := "toolchain/family" || $(default_family)
+  bind cc := "toolchain/cc" || $(default_cc)
+  bind cxx := "toolchain/cxx" || $(default_cxx)
+  bind ar := "toolchain/ar" || $(default_ar)
   bind common_flags := "flags/common"
   bind c_flags := "flags/c"
   bind cxx_flags := "flags/cxx"

@@ -19,10 +19,10 @@ Run:
 
 What it shows:
 
-- The standard `@std//toolchains` package returning spreadable host toolchain settings
+- The standard `@std//native` package defaulting to the host toolchain automatically
 - The standard `@std//vcpkg` helper returning spreadable install metadata and package flags
 - A pinned `builtin-baseline` in `manifest/vcpkg.json`
-- Auto-exporting installed `include/` and `lib/` prefix directories
+- Default export of installed `include/` and `lib/` prefix directories
 - Building and linking a native binary against the installed `sqlite3` package
 
 Outputs:
@@ -37,3 +37,5 @@ Maintenance notes:
   update the dependency set.
 - If you need more installed content tracked, extend `vcpkg/export_dirs` or use
   explicit `vcpkg/export_files`.
+- The example relies on stdlib defaults for host toolchain selection, manifest
+  input discovery, and `include/` + `lib/` exports.

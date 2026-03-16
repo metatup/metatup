@@ -47,11 +47,12 @@
 #include <unistd.h>
 #include <errno.h>
 #include <ctype.h>
+#include <fnmatch.h>
 #include <sys/stat.h>
 #include "sqlite3/sqlite3.h"
 
-#define DB_VERSION 19
-#define PARSER_VERSION 17
+#define DB_VERSION 20
+#define PARSER_VERSION 18
 
 enum {
 	DB_BEGIN,
@@ -345,6 +346,8 @@ int tup_db_create(int db_sync, int memory_db)
 		"create table modify_list (id integer primary key not null)",
 		"create table variant_list (id integer primary key not null)",
 		"create table transient_list (id integer primary key not null)",
+		"create table command_allow_read (cmdid integer not null, seq integer not null, pattern varchar(4096) not null, unique(cmdid, seq))",
+		"create index command_allow_read_cmdid on command_allow_read(cmdid)",
 		"create index normal_index2 on normal_link(to_id)",
 		"create index sticky_index2 on sticky_link(to_id)",
 		"create index group_index2 on group_link(cmdid)",
@@ -691,6 +694,15 @@ static int version_check(void)
 			"Added an mtime_ns column for nanosecond timestamp resolution.",
 			{
 				"alter table node add column mtime_ns integer default 0",
+			}
+		},
+		{
+			/* Upgrade to version 20 */
+			"Added per-command allow_read patterns for ambient undeclared reads.",
+			{
+				"create table command_allow_read (cmdid integer not null, seq integer not null, pattern varchar(4096) not null, unique(cmdid, seq))",
+				"create index command_allow_read_cmdid on command_allow_read(cmdid)",
+				"insert or replace into create_list select id from node where type=2",
 			}
 		},
 	};
@@ -2213,6 +2225,205 @@ int tup_db_set_flags(struct tup_entry *tent, const char *flags, int flagslen)
 		return -1;
 
 	return 0;
+}
+
+int tup_db_delete_allowed_reads(tupid_t cmdid)
+{
+	sqlite3_stmt *stmt = NULL;
+	static char s[] = "delete from command_allow_read where cmdid=?";
+	int rc = -1;
+
+	transaction_check("%s [%lli]", s, cmdid);
+	if(sqlite3_prepare_v2(tup_db, s, sizeof(s), &stmt, NULL) != 0) {
+		fprintf(stderr, "SQL Error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		return -1;
+	}
+	if(sqlite3_bind_int64(stmt, 1, cmdid) != 0) {
+		fprintf(stderr, "SQL bind error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		goto out;
+	}
+	if(sqlite3_step(stmt) != SQLITE_DONE) {
+		fprintf(stderr, "SQL step error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		goto out;
+	}
+	rc = 0;
+out:
+	if(stmt) {
+		if(msqlite3_reset(stmt) != 0) {
+			fprintf(stderr, "SQL reset error: %s\n", sqlite3_errmsg(tup_db));
+			fprintf(stderr, "Statement was: %s\n", s);
+			rc = -1;
+		}
+		sqlite3_finalize(stmt);
+	}
+	return rc;
+}
+
+int tup_db_add_allowed_read(tupid_t cmdid, int seq, const char *pattern, int patternlen)
+{
+	sqlite3_stmt *stmt = NULL;
+	static char s[] = "insert into command_allow_read(cmdid, seq, pattern) values(?, ?, ?)";
+	int rc = -1;
+
+	transaction_check("%s [%lli, %i, '%.*s']", s, cmdid, seq, patternlen, pattern);
+	if(sqlite3_prepare_v2(tup_db, s, sizeof(s), &stmt, NULL) != 0) {
+		fprintf(stderr, "SQL Error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		return -1;
+	}
+	if(sqlite3_bind_int64(stmt, 1, cmdid) != 0) {
+		fprintf(stderr, "SQL bind error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		goto out;
+	}
+	if(sqlite3_bind_int(stmt, 2, seq) != 0) {
+		fprintf(stderr, "SQL bind error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		goto out;
+	}
+	if(sqlite3_bind_text(stmt, 3, pattern, patternlen, SQLITE_STATIC) != 0) {
+		fprintf(stderr, "SQL bind error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		goto out;
+	}
+	if(sqlite3_step(stmt) != SQLITE_DONE) {
+		fprintf(stderr, "SQL step error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		goto out;
+	}
+	rc = 0;
+out:
+	if(stmt) {
+		if(msqlite3_reset(stmt) != 0) {
+			fprintf(stderr, "SQL reset error: %s\n", sqlite3_errmsg(tup_db));
+			fprintf(stderr, "Statement was: %s\n", s);
+			rc = -1;
+		}
+		sqlite3_finalize(stmt);
+	}
+	return rc;
+}
+
+int tup_db_get_allowed_reads_serialized(tupid_t cmdid, struct estring *e)
+{
+	sqlite3_stmt *stmt = NULL;
+	static char s[] = "select pattern from command_allow_read where cmdid=? order by seq";
+	int rc = -1;
+	int dbrc;
+
+	transaction_check("%s [%lli]", s, cmdid);
+	if(sqlite3_prepare_v2(tup_db, s, sizeof(s), &stmt, NULL) != 0) {
+		fprintf(stderr, "SQL Error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		return -1;
+	}
+	if(sqlite3_bind_int64(stmt, 1, cmdid) != 0) {
+		fprintf(stderr, "SQL bind error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		goto out;
+	}
+	while((dbrc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const char *pattern = (const char *)sqlite3_column_text(stmt, 0);
+		int len = sqlite3_column_bytes(stmt, 0);
+
+		if(estring_append(e, pattern, len) < 0)
+			goto out;
+		if(estring_append(e, "\n", 1) < 0)
+			goto out;
+	}
+	if(dbrc != SQLITE_DONE) {
+		fprintf(stderr, "SQL step error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		goto out;
+	}
+	rc = 0;
+out:
+	if(stmt) {
+		if(msqlite3_reset(stmt) != 0) {
+			fprintf(stderr, "SQL reset error: %s\n", sqlite3_errmsg(tup_db));
+			fprintf(stderr, "Statement was: %s\n", s);
+			rc = -1;
+		}
+		sqlite3_finalize(stmt);
+	}
+	return rc;
+}
+
+static int allowed_read_pattern_matches(struct tup_entry *cmdtent,
+					struct tup_entry *tent,
+					const char *pattern)
+{
+	char repo_path[PATH_MAX];
+	struct estring rel = {0};
+	int allowed = 0;
+
+	if(snprint_tup_entry(repo_path, sizeof(repo_path), tent) >= (int)sizeof(repo_path)) {
+		fprintf(stderr, "tup error: Path too long while matching allow_read pattern '%s'\n", pattern);
+		return -1;
+	}
+	if(fnmatch(pattern, repo_path, 0) == 0)
+		return 1;
+	if(estring_init(&rel) < 0)
+		return -1;
+	if(get_relative_dir(NULL, &rel, cmdtent->dt, tent->tnode.tupid) < 0)
+		goto out;
+	if(fnmatch(pattern, rel.s, 0) == 0)
+		allowed = 1;
+out:
+	free(rel.s);
+	return allowed;
+}
+
+int tup_db_is_allowed_read(tupid_t cmdid, struct tup_entry *cmdtent, struct tup_entry *tent, int *allowed)
+{
+	sqlite3_stmt *stmt = NULL;
+	static char s[] = "select pattern from command_allow_read where cmdid=? order by seq";
+	int rc = -1;
+	int dbrc;
+
+	*allowed = 0;
+	transaction_check("%s [%lli]", s, cmdid);
+	if(sqlite3_prepare_v2(tup_db, s, sizeof(s), &stmt, NULL) != 0) {
+		fprintf(stderr, "SQL Error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		return -1;
+	}
+	if(sqlite3_bind_int64(stmt, 1, cmdid) != 0) {
+		fprintf(stderr, "SQL bind error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		goto out;
+	}
+	while((dbrc = sqlite3_step(stmt)) == SQLITE_ROW) {
+		const char *pattern = (const char *)sqlite3_column_text(stmt, 0);
+		int matched;
+
+		matched = allowed_read_pattern_matches(cmdtent, tent, pattern);
+		if(matched < 0)
+			goto out;
+		if(matched) {
+			*allowed = 1;
+			break;
+		}
+	}
+	if(dbrc != SQLITE_DONE && dbrc != SQLITE_ROW) {
+		fprintf(stderr, "SQL step error: %s\n", sqlite3_errmsg(tup_db));
+		fprintf(stderr, "Statement was: %s\n", s);
+		goto out;
+	}
+	rc = 0;
+out:
+	if(stmt) {
+		if(msqlite3_reset(stmt) != 0) {
+			fprintf(stderr, "SQL reset error: %s\n", sqlite3_errmsg(tup_db));
+			fprintf(stderr, "Statement was: %s\n", s);
+			rc = -1;
+		}
+		sqlite3_finalize(stmt);
+	}
+	return rc;
 }
 
 int tup_db_set_type(struct tup_entry *tent, enum TUP_NODE_TYPE type)
@@ -6103,6 +6314,7 @@ int tup_db_write_inputs(FILE *f, tupid_t cmdid, struct tent_entries *input_root,
 struct actual_input_data {
 	FILE *f;
 	tupid_t cmdid;
+	struct tup_entry *cmdtent;
 	struct variant *cmd_variant;
 	struct tent_entries *sticky_root;
 	struct tent_entries *output_root;
@@ -6126,6 +6338,12 @@ static int new_input(struct tup_entry *tent, void *data)
 	}
 
 	if(tent->type == TUP_NODE_GENERATED) {
+		int allowed = 0;
+
+		if(tup_db_is_allowed_read(aid->cmdid, aid->cmdtent, tent, &allowed) < 0)
+			return -1;
+		if(allowed)
+			return 0;
 		if(tent_tree_add(&aid->missing_input_root, tent) < 0)
 			return -1;
 		return 0;
@@ -6238,17 +6456,17 @@ int tup_db_check_actual_inputs(FILE *f, tupid_t cmdid,
 	struct actual_input_data aid = {
 		.f = f,
 		.cmdid = cmdid,
+		.cmdtent = NULL,
 		.sticky_root = sticky_root,
 		.output_root = output_root,
 		.missing_input_root = TENT_ENTRIES_INITIALIZER,
 		.important_link_removed = 0,
 	};
 	int rc;
-	struct tup_entry *cmd_tent;
 
-	if(tup_entry_add(cmdid, &cmd_tent) < 0)
+	if(tup_entry_add(cmdid, &aid.cmdtent) < 0)
 		return -1;
-	aid.cmd_variant = tup_entry_variant(cmd_tent);
+	aid.cmd_variant = tup_entry_variant(aid.cmdtent);
 
 	if(tent_tree_copy(&sticky_copy, aid.sticky_root) < 0)
 		return -1;

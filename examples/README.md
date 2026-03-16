@@ -19,9 +19,11 @@ Suggested order:
 5. `05-external-project`
    The built-in `@std//external` helper for configure/build/install flows.
 6. `06-vcpkg-manifest`
-   The built-in `@std//vcpkg` helper in a hermetic, test-friendly setup.
+   The built-in `@std//vcpkg` helper in a hermetic, test-friendly setup with
+   default manifest input discovery.
 7. `07-vcpkg-real`
-   A real `vcpkg` manifest install that builds and links against `sqlite3`.
+   A real `vcpkg` manifest install that builds and links against `sqlite3`
+   using stdlib defaults for host toolchain and manifest handling.
 
 Common commands:
 

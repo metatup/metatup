@@ -96,6 +96,10 @@ int tup_db_change_node(tupid_t tupid, const char *name, struct tup_entry *new_dt
 int tup_db_set_name(tupid_t tupid, const char *new_name, tupid_t new_dt);
 int tup_db_set_display(struct tup_entry *tent, const char *display, int displaylen);
 int tup_db_set_flags(struct tup_entry *tent, const char *flags, int flagslen);
+int tup_db_delete_allowed_reads(tupid_t cmdid);
+int tup_db_add_allowed_read(tupid_t cmdid, int seq, const char *pattern, int patternlen);
+int tup_db_get_allowed_reads_serialized(tupid_t cmdid, struct estring *e);
+int tup_db_is_allowed_read(tupid_t cmdid, struct tup_entry *cmdtent, struct tup_entry *tent, int *allowed);
 int tup_db_set_type(struct tup_entry *tent, enum TUP_NODE_TYPE type);
 int tup_db_set_mtime(struct tup_entry *tent, struct timespec mtime);
 int tup_db_set_srcid(struct tup_entry *tent, tupid_t srcid);

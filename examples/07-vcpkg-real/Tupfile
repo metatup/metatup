@@ -1,21 +1,12 @@
-fbind { }: toolchain := call "@std//toolchains" host({})
-
 fbind { }: sqlite3 := call "@std//vcpkg" install_host_package({
-  ...toolchain,
-  "brdir": "./build",
   "vcpkg/exe": "./tools/vcpkg",
   "vcpkg/manifest_dir": "./manifest",
-  "vcpkg/manifest_inputs": "./manifest/vcpkg.json",
-  "vcpkg/windows/linkage": "static",
-  "vcpkg/export_dirs": "include lib",
   "package/posix_link_flags": "-lsqlite3",
   "package/msvc_link_flags": "sqlite3.lib"
 })
 
 fbind { "bin": demo } := call "@std//native" binary({
-  ...toolchain,
   ...sqlite3,
   "native/binary/name": "sqlite-demo",
-  "brdir": "./build",
   "native/binary/c/sources": "./src/main.c"
 })

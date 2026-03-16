@@ -32,13 +32,25 @@
 #include "variant.h"
 #include "version.h"
 #include "metatup_repo.h"
+#include "embedded_stdlib.h"
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
 #include <time.h>
 #include <sys/stat.h>
+
+#define TUP_STDLIB_HASH_FILE TUP_DIR "/stdlib-hash"
+#define TUP_STDLIB_DIR TUP_DIR "/repos/std"
+
+static void compute_stdlib_hash(char out[17]);
+static int create_tup_metadata(int db_sync);
+static int write_stdlib_hash_file(void);
+static int read_stored_stdlib_hash(char *buf, size_t buflen, int *missing);
+static int remove_dir_recursive_at(int dirfd, const char *path, int remove_self);
+static int invalidate_stdlib_if_stale(void);
 
 int tup_init(int argc, char **argv)
 {
@@ -58,6 +70,9 @@ int tup_init(int argc, char **argv)
 		goto out_err;
 	}
 	if(open_tup_top() < 0) {
+		goto out_err;
+	}
+	if(invalidate_stdlib_if_stale() < 0) {
 		goto out_err;
 	}
 	{
@@ -192,6 +207,192 @@ static int mkdirtree(const char *dirname)
 	return 0;
 }
 
+static void compute_stdlib_hash(char out[17])
+{
+	unsigned long long hash = 1469598103934665603ULL;
+	unsigned int x;
+	unsigned int y;
+
+	for(x=0; x<metatup_stdlib_files_count; x++) {
+		const struct metatup_embedded_file *file = &metatup_stdlib_files[x];
+		const unsigned char *p = (const unsigned char *)file->path;
+
+		while(*p) {
+			hash ^= *p;
+			hash *= 1099511628211ULL;
+			p++;
+		}
+		hash ^= 0xff;
+		hash *= 1099511628211ULL;
+		for(y=0; y<4; y++) {
+			hash ^= (file->len >> (y * 8)) & 0xff;
+			hash *= 1099511628211ULL;
+		}
+		for(y=0; y<file->len; y++) {
+			hash ^= file->data[y];
+			hash *= 1099511628211ULL;
+		}
+	}
+	snprintf(out, 17, "%016llx", hash);
+}
+
+static int write_stdlib_hash_file(void)
+{
+	FILE *f;
+	char hash[17];
+
+	compute_stdlib_hash(hash);
+	f = fopen(TUP_STDLIB_HASH_FILE, "w");
+	if(!f) {
+		perror(TUP_STDLIB_HASH_FILE);
+		return -1;
+	}
+	if(fprintf(f, "%s\n", hash) < 0) {
+		perror("fprintf(stdlib-hash)");
+		fclose(f);
+		return -1;
+	}
+	if(fclose(f) < 0) {
+		perror("fclose(stdlib-hash)");
+		return -1;
+	}
+	return 0;
+}
+
+static int create_tup_metadata(int db_sync)
+{
+	if(mkdir(TUP_DIR, 0777) != 0) {
+		perror(TUP_DIR);
+		return -1;
+	}
+	if(tup_db_create(db_sync, 0) != 0)
+		return -1;
+	if(write_stdlib_hash_file() < 0)
+		return -1;
+	return 0;
+}
+
+static int read_stored_stdlib_hash(char *buf, size_t buflen, int *missing)
+{
+	FILE *f = fopen(TUP_STDLIB_HASH_FILE, "r");
+	size_t len;
+
+	if(!f) {
+		if(errno == ENOENT) {
+			*missing = 1;
+			return 0;
+		}
+		perror(TUP_STDLIB_HASH_FILE);
+		return -1;
+	}
+	*missing = 0;
+	if(!fgets(buf, buflen, f)) {
+		if(ferror(f)) {
+			perror(TUP_STDLIB_HASH_FILE);
+			fclose(f);
+			return -1;
+		}
+		buf[0] = 0;
+	}
+	if(fclose(f) < 0) {
+		perror("fclose(stdlib-hash)");
+		return -1;
+	}
+	len = strlen(buf);
+	while(len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r')) {
+		buf[len-1] = 0;
+		len--;
+	}
+	return 0;
+}
+
+static int remove_dir_recursive_at(int dirfd, const char *path, int remove_self)
+{
+	int fd;
+	DIR *dir;
+	struct dirent *de;
+
+	fd = openat(dirfd, path, O_RDONLY | O_CLOEXEC);
+	if(fd < 0) {
+		if(errno == ENOENT)
+			return 0;
+		perror(path);
+		return -1;
+	}
+	dir = fdopendir(fd);
+	if(!dir) {
+		perror("fdopendir");
+		close(fd);
+		return -1;
+	}
+	while((de = readdir(dir)) != NULL) {
+		char child[PATH_MAX];
+		struct stat st;
+
+		if(strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			continue;
+		if(snprintf(child, sizeof(child), "%s/%s", path, de->d_name) >= (int)sizeof(child)) {
+			fprintf(stderr, "tup error: Path too long while removing stale metadata: %s/%s\n",
+				path, de->d_name);
+			closedir(dir);
+			return -1;
+		}
+		if(fstatat(dirfd, child, &st, AT_SYMLINK_NOFOLLOW) < 0) {
+			if(errno == ENOENT)
+				continue;
+			perror(child);
+			closedir(dir);
+			return -1;
+		}
+		if(S_ISDIR(st.st_mode)) {
+			if(remove_dir_recursive_at(dirfd, child, 1) < 0) {
+				closedir(dir);
+				return -1;
+			}
+		} else {
+			if(unlinkat(dirfd, child, 0) < 0 && errno != ENOENT) {
+				perror(child);
+				closedir(dir);
+				return -1;
+			}
+		}
+	}
+	if(closedir(dir) < 0) {
+		perror("closedir");
+		return -1;
+	}
+	if(remove_self) {
+		if(unlinkat(dirfd, path, AT_REMOVEDIR) < 0 && errno != ENOENT) {
+			perror(path);
+			return -1;
+		}
+	}
+	return 0;
+}
+
+static int invalidate_stdlib_if_stale(void)
+{
+	char stored[17];
+	char current[17];
+	int missing = 0;
+
+	if(getenv("METATUP_SKIP_STDLIB_HASH_CHECK"))
+		return 0;
+	compute_stdlib_hash(current);
+	if(read_stored_stdlib_hash(stored, sizeof(stored), &missing) < 0)
+		return -1;
+	if(!missing && strcmp(stored, current) == 0)
+		return 0;
+
+	fprintf(stderr, "tup info: invalidating stale embedded stdlib (stored hash: %s, current: %s).\n",
+		missing ? "<missing>" : stored, current);
+	if(remove_dir_recursive_at(tup_top_fd(), TUP_STDLIB_DIR, 1) < 0)
+		return -1;
+	if(write_stdlib_hash_file() < 0)
+		return -1;
+	return 0;
+}
+
 int init_command(int argc, char **argv)
 {
 	int x;
@@ -250,14 +451,8 @@ int init_command(int argc, char **argv)
 		return -1;
 	}
 
-	if(mkdir(TUP_DIR, 0777) != 0) {
-		perror(TUP_DIR);
+	if(create_tup_metadata(db_sync) != 0)
 		return -1;
-	}
-
-	if(tup_db_create(db_sync, 0) != 0) {
-		return -1;
-	}
 
 	if(!db_sync) {
 		FILE *f = fopen(TUP_OPTIONS_FILE, "w");

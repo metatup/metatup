@@ -5597,11 +5597,25 @@ out_materialize:
 		return invoke_rc;
 	}
 
-	rc = parse_fbind_map(line, &bindings, &object_var);
-	if(rc < 0) {
-		vardb_close(&bindings);
-		free(object_var);
-		return rc;
+	while(isspace((unsigned char)*line))
+		line++;
+	if(*line == '{') {
+		rc = parse_fbind_map(line, &bindings, &object_var);
+		if(rc < 0) {
+			vardb_close(&bindings);
+			free(object_var);
+			return rc;
+		}
+	} else {
+		rc = vardb_init(&bindings);
+		if(rc < 0)
+			return rc;
+		rc = parse_simple_fbind_var(line, &object_var);
+		if(rc < 0) {
+			vardb_close(&bindings);
+			free(object_var);
+			return rc;
+		}
 	}
 	if(vardb_init(&returns) < 0) {
 		vardb_close(&bindings);
@@ -5611,6 +5625,21 @@ out_materialize:
 
 	while(isspace(*invoke))
 		invoke++;
+	if(strncmp(invoke, "merge", 5) == 0 &&
+	   (isspace((unsigned char)invoke[5]) || invoke[5] == '{')) {
+		invoke += 5;
+		while(isspace((unsigned char)*invoke))
+			invoke++;
+		invoke_rc = parse_arg_map(tf, invoke, &returns, 0);
+		if(invoke_rc >= 0)
+			invoke_rc = assign_fbind_vars(tf, &bindings, &returns, object_var);
+		vardb_close(&returns);
+		vardb_close(&bindings);
+		free(object_var);
+		if(invoke_rc < 0)
+			fprintf(tf->f, "tup error: Error invoking function on line %i.\n", lno);
+		return invoke_rc;
+	}
 	if(strncmp(invoke, "call ", 5) == 0) {
 		inherit_reldir = 1;
 		invoke += 5;
@@ -8044,6 +8073,121 @@ struct command_split {
 	const char *cmd;
 };
 
+struct allow_read_pattern {
+	TAILQ_ENTRY(allow_read_pattern) list;
+	char *pattern;
+	int len;
+};
+TAILQ_HEAD(allow_read_head, allow_read_pattern);
+
+struct parsed_command_flags {
+	char *flags;
+	int flagslen;
+	struct allow_read_head allow_reads;
+};
+
+static void init_parsed_command_flags(struct parsed_command_flags *pcf)
+{
+	pcf->flags = NULL;
+	pcf->flagslen = 0;
+	TAILQ_INIT(&pcf->allow_reads);
+}
+
+static void free_parsed_command_flags(struct parsed_command_flags *pcf)
+{
+	struct allow_read_pattern *arp;
+
+	free(pcf->flags);
+	while((arp = TAILQ_FIRST(&pcf->allow_reads)) != NULL) {
+		TAILQ_REMOVE(&pcf->allow_reads, arp, list);
+		free(arp->pattern);
+		free(arp);
+	}
+}
+
+static int add_allow_read_pattern(struct tupfile *tf, struct allow_read_head *head,
+				  const char *pattern, int len)
+{
+	struct allow_read_pattern *arp;
+
+	if(len <= 0) {
+		fprintf(tf->f, "tup error: allow_read requires a non-empty pattern.\n");
+		return -1;
+	}
+	arp = malloc(sizeof(*arp));
+	if(!arp) {
+		perror("malloc");
+		return -1;
+	}
+	arp->pattern = strndup(pattern, len);
+	if(!arp->pattern) {
+		perror("strndup");
+		free(arp);
+		return -1;
+	}
+	arp->len = len;
+	TAILQ_INSERT_TAIL(head, arp, list);
+	return 0;
+}
+
+static int parse_command_flags(struct tupfile *tf, const char *raw_flags, int raw_flagslen,
+			       struct parsed_command_flags *pcf)
+{
+	const char *s = raw_flags;
+	const char *end = raw_flags + raw_flagslen;
+	static const char allow_read_prefix[] = "allow_read=";
+
+	init_parsed_command_flags(pcf);
+	pcf->flags = malloc(raw_flagslen + 1);
+	if(!pcf->flags) {
+		perror("malloc");
+		return -1;
+	}
+	while(s < end) {
+		const char *token = s;
+		const char *token_end;
+		int token_len;
+
+		while(s < end && *s != ',')
+			s++;
+		token_end = s;
+		token_len = token_end - token;
+		if(token_len == 0) {
+			fprintf(tf->f, "tup error: Empty token in command flag list.\n");
+			return -1;
+		}
+		if(token_len >= (int)sizeof(allow_read_prefix) - 1 &&
+		   strncmp(token, allow_read_prefix, sizeof(allow_read_prefix) - 1) == 0) {
+			if(add_allow_read_pattern(tf, &pcf->allow_reads,
+					       token + sizeof(allow_read_prefix) - 1,
+					       token_len - (sizeof(allow_read_prefix) - 1)) < 0)
+				return -1;
+		} else {
+			memcpy(pcf->flags + pcf->flagslen, token, token_len);
+			pcf->flagslen += token_len;
+		}
+		if(s < end)
+			s++;
+	}
+	pcf->flags[pcf->flagslen] = 0;
+	return 0;
+}
+
+static int serialize_allow_reads(struct estring *e, struct allow_read_head *head)
+{
+	struct allow_read_pattern *arp;
+
+	if(estring_init(e) < 0)
+		return -1;
+	TAILQ_FOREACH(arp, head, list) {
+		if(estring_append(e, arp->pattern, arp->len) < 0)
+			return -1;
+		if(estring_append(e, "\n", 1) < 0)
+			return -1;
+	}
+	return 0;
+}
+
 static int split_command_string(struct tupfile *tf, const char *cmd, struct command_split *cs)
 {
 	cs->flags = "";
@@ -8121,6 +8265,11 @@ static int do_rule(struct tupfile *tf, struct rule *r, struct name_list *nl,
 	int compare_display_flags = 0;
 	int transient_outputs = 0;
 	struct command_split cs;
+	struct parsed_command_flags pcf;
+	struct estring allow_reads = {0};
+	struct estring existing_allow_reads = {0};
+	int allow_read_seq = 0;
+	struct allow_read_pattern *arp;
 
 	/* t3017 - empty rules are just pass-through to get the input into the
 	 * bin.
@@ -8137,10 +8286,18 @@ static int do_rule(struct tupfile *tf, struct rule *r, struct name_list *nl,
 
 	if(split_command_string(tf, r->command, &cs) < 0)
 		return -1;
-	if(memchr(cs.flags, 't', cs.flagslen) != NULL)
+	if(parse_command_flags(tf, cs.flags, cs.flagslen, &pcf) < 0)
+		return -1;
+	if(serialize_allow_reads(&allow_reads, &pcf.allow_reads) < 0) {
+		free_parsed_command_flags(&pcf);
+		return -1;
+	}
+	if(memchr(pcf.flags, 't', pcf.flagslen) != NULL)
 		transient_outputs = 1;
-	if(memchr(cs.flags, 'o', cs.flagslen) != NULL && transient_outputs) {
+	if(memchr(pcf.flags, 'o', pcf.flagslen) != NULL && transient_outputs) {
 		fprintf(tf->f, "tup error: Unable to use both 'o' and 't' flags at the same time. Outputs cannot be compared with 'o' if the files are deleted after they are used with 't'.\n");
+		free(allow_reads.s);
+		free_parsed_command_flags(&pcf);
 		return -1;
 	}
 
@@ -8217,9 +8374,11 @@ static int do_rule(struct tupfile *tf, struct rule *r, struct name_list *nl,
 			tupid_t cmdid;
 			if(tf->refactoring) {
 				fprintf(tf->f, "tup refactoring error: Attempting to create a new command: %s\n", cmd);
+				free(allow_reads.s);
+				free_parsed_command_flags(&pcf);
 				return -1;
 			}
-			cmdid = create_command_file(tf->tent->tnode.tupid, cmd, real_display, real_displaylen, cs.flags, cs.flagslen);
+			cmdid = create_command_file(tf->tent->tnode.tupid, cmd, real_display, real_displaylen, pcf.flags, pcf.flagslen);
 			if(tup_entry_add(cmdid, &cmdtent) < 0)
 				return -1;
 		} else {
@@ -8245,21 +8404,43 @@ static int do_rule(struct tupfile *tf, struct rule *r, struct name_list *nl,
 			if(tup_db_set_display(cmdtent, real_display, real_displaylen) < 0)
 				return -1;
 		}
-		if(cmdtent->flagslen != cs.flagslen || (cs.flagslen > 0 && strncmp(cmdtent->flags, cs.flags, cs.flagslen)) != 0) {
+		if(cmdtent->flagslen != pcf.flagslen || (pcf.flagslen > 0 && strncmp(cmdtent->flags, pcf.flags, pcf.flagslen)) != 0) {
 			if(tf->refactoring) {
 				fprintf(tf->f, "tup refactoring error: Attempting to modify a command's flags:\n");
 				fprintf(tf->f, "Old: '%.*s'\n", cmdtent->flagslen, cmdtent->flags);
-				fprintf(tf->f, "New: '%.*s'\n", cs.flagslen, cs.flags);
+				fprintf(tf->f, "New: '%.*s'\n", pcf.flagslen, pcf.flags);
 				return -1;
 			}
-			if(tup_db_set_flags(cmdtent, cs.flags, cs.flagslen) < 0)
+			if(tup_db_set_flags(cmdtent, pcf.flags, pcf.flagslen) < 0)
 				return -1;
 			command_modified = 1;
 		}
 	}
+	if(estring_init(&existing_allow_reads) < 0)
+		return -1;
+	if(tup_db_get_allowed_reads_serialized(cmdtent->tnode.tupid, &existing_allow_reads) < 0)
+		return -1;
+	if(existing_allow_reads.len != allow_reads.len ||
+	   (allow_reads.len > 0 && strncmp(existing_allow_reads.s, allow_reads.s, allow_reads.len) != 0)) {
+		if(tf->refactoring) {
+			fprintf(tf->f, "tup refactoring error: Attempting to modify a command's allow_read list.\n");
+			return -1;
+		}
+		if(tup_db_delete_allowed_reads(cmdtent->tnode.tupid) < 0)
+			return -1;
+		TAILQ_FOREACH(arp, &pcf.allow_reads, list) {
+			if(tup_db_add_allowed_read(cmdtent->tnode.tupid, allow_read_seq, arp->pattern, arp->len) < 0)
+				return -1;
+			allow_read_seq++;
+		}
+		command_modified = 1;
+	}
 
 	free(real_display);
 	free(cmd);
+	free(existing_allow_reads.s);
+	free(allow_reads.s);
+	free_parsed_command_flags(&pcf);
 	if(!cmdtent)
 		return -1;
 

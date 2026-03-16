@@ -775,9 +775,13 @@ int metatup_repo_materialize_all(const char *repo_root, char **err)
 {
 	struct mtr_file mf;
 	char *config = NULL;
+	char *path = NULL;
 	int x;
 
 	*err = NULL;
+	if(metatup_repo_materialize(repo_root, METATUP_STDLIB_REPO_NAME, &path, err) < 0)
+		return -1;
+	free(path);
 	config = mtr_join(repo_root, "MetaTupRepo.yaml");
 	if(!config)
 		return -1;
@@ -790,7 +794,7 @@ int metatup_repo_materialize_all(const char *repo_root, char **err)
 		return -1;
 	}
 	for(x=0; x<mf.num_deps; x++) {
-		char *path = NULL;
+		path = NULL;
 		if(mf.deps[x].path)
 			continue;
 		if(metatup_repo_materialize(repo_root, mf.deps[x].name, &path, err) < 0) {
