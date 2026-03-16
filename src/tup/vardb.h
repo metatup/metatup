@@ -29,6 +29,13 @@
 
 struct tup_entry;
 
+enum vardb_merge_mode {
+	VDB_MERGE_INHERIT = -1,
+	VDB_MERGE_OVERRIDE = 0,
+	VDB_MERGE_APPEND = 1,
+	VDB_MERGE_PREPEND = 2,
+};
+
 struct vardb {
 	struct string_entries root;
 	int count;
@@ -38,6 +45,7 @@ struct var_entry {
 	struct string_tree var;
 	char *value;
 	int vallen;
+	enum vardb_merge_mode merge_mode;
 	struct tup_entry *tent;   /* only used in db.c */
 };
 
@@ -47,7 +55,14 @@ int vardb_set(struct vardb *v, const char *var, const char *value,
               struct tup_entry *tent);
 struct var_entry *vardb_set2(struct vardb *v, const char *var, int varlen,
                              const char *value, struct tup_entry *tent);
+int vardb_set_mode(struct vardb *v, const char *var, const char *value,
+		     enum vardb_merge_mode mode, struct tup_entry *tent);
+struct var_entry *vardb_set2_mode(struct vardb *v, const char *var, int varlen,
+				    const char *value, enum vardb_merge_mode mode,
+				    struct tup_entry *tent);
 int vardb_append(struct vardb *v, const char *var, const char *value);
+int vardb_merge(struct vardb *v, const char *var, const char *value,
+		 enum vardb_merge_mode mode);
 int vardb_copy(struct vardb *v, const char *var, int varlen, struct estring *e);
 struct var_entry *vardb_get(struct vardb *v, const char *var, int varlen);
 int vardb_compare(struct vardb *vdba, struct vardb *vdbb,

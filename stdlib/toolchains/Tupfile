@@ -1,48 +1,24 @@
 function host {
   ifeq (@(TUP_PLATFORM),win32)
-    fbind {
-      "family": family,
-      "os": os,
-      "cc": cc,
-      "cxx": cxx,
-      "linker": linker,
-      "ar": ar
-    } := call msvc({})
+    fbind { }: vals := call msvc({})
   endif
 
   ifeq (@(TUP_PLATFORM),macosx)
-    fbind {
-      "family": family,
-      "os": os,
-      "cc": cc,
-      "cxx": cxx,
-      "linker": linker,
-      "ar": ar
-    } := call clang({
+    fbind { }: vals := call clang({
+      ...,
       "toolchain/os": "macos"
     })
   endif
 
   ifeq (@(TUP_PLATFORM),linux)
-    fbind {
-      "family": family,
-      "os": os,
-      "cc": cc,
-      "cxx": cxx,
-      "linker": linker,
-      "ar": ar
-    } := call gcc({
+    fbind { }: vals := call gcc({
+      ...,
       "toolchain/os": "linux"
     })
   endif
 
   return {
-    "family": "$(family)",
-    "os": "$(os)",
-    "cc": "$(cc)",
-    "cxx": "$(cxx)",
-    "linker": "$(linker)",
-    "ar": "$(ar)"
+    ...vals
   }
 }
 
@@ -50,12 +26,12 @@ function gcc {
   bind os := "toolchain/os" || linux
 
   return {
-    "family": "gcc",
-    "os": "$(os)",
-    "cc": "gcc",
-    "cxx": "g++",
-    "linker": "g++",
-    "ar": "ar"
+    overriding "toolchain/family": "gcc",
+    overriding "toolchain/os": "$(os)",
+    overriding "toolchain/cc": "gcc",
+    overriding "toolchain/cxx": "g++",
+    overriding "toolchain/linker": "g++",
+    overriding "toolchain/ar": "ar"
   }
 }
 
@@ -63,23 +39,23 @@ function clang {
   bind os := "toolchain/os" || linux
 
   return {
-    "family": "clang",
-    "os": "$(os)",
-    "cc": "clang",
-    "cxx": "clang++",
-    "linker": "clang++",
-    "ar": "ar"
+    overriding "toolchain/family": "clang",
+    overriding "toolchain/os": "$(os)",
+    overriding "toolchain/cc": "clang",
+    overriding "toolchain/cxx": "clang++",
+    overriding "toolchain/linker": "clang++",
+    overriding "toolchain/ar": "ar"
   }
 }
 
 function msvc {
   return {
-    "family": "msvc",
-    "os": "windows",
-    "cc": "cl",
-    "cxx": "cl",
-    "linker": "link",
-    "ar": "lib"
+    overriding "toolchain/family": "msvc",
+    overriding "toolchain/os": "windows",
+    overriding "toolchain/cc": "cl",
+    overriding "toolchain/cxx": "cl",
+    overriding "toolchain/linker": "link",
+    overriding "toolchain/ar": "lib"
   }
 }
 
@@ -92,13 +68,13 @@ function package_flags {
 
   ifeq ($(family),msvc)
     return {
-      "c_flags": "/I$(include_dir)",
-      "link_flags": "/LIBPATH:$(lib_dir) $(msvc_link_flags)"
+      appending "flags/c": "/I$(include_dir)",
+      appending "flags/ld_exe": "/LIBPATH:$(lib_dir) $(msvc_link_flags)"
     }
   endif
 
   return {
-    "c_flags": "-I$(include_dir)",
-    "link_flags": "-L$(lib_dir) $(posix_link_flags)"
+    appending "flags/c": "-I$(include_dir)",
+    appending "flags/ld_exe": "-L$(lib_dir) $(posix_link_flags)"
   }
 }

@@ -1,47 +1,21 @@
-fbind {
-  "family": toolchain_family,
-  "os": toolchain_os,
-  "cc": toolchain_cc,
-  "cxx": toolchain_cxx,
-  "linker": toolchain_linker,
-  "ar": toolchain_ar
-} := call "@std//toolchains" host({})
+fbind { }: toolchain := call "@std//toolchains" host({})
 
-fbind {
-  "triplet": triplet,
-  "prefix": prefix,
-  "include_dir": include_dir,
-  "lib_dir": lib_dir,
-  "stamp": stamp
-} := call "@std//vcpkg" install_host_manifest({
+fbind { }: sqlite3 := call "@std//vcpkg" install_host_package({
+  ...toolchain,
   "brdir": "./build",
   "vcpkg/exe": "./tools/vcpkg",
   "vcpkg/manifest_dir": "./manifest",
   "vcpkg/manifest_inputs": "./manifest/vcpkg.json",
   "vcpkg/windows/linkage": "static",
-  "vcpkg/export_dirs": "include lib"
-})
-
-fbind {
-  "c_flags": c_flags,
-  "link_flags": link_flags
-} := call "@std//toolchains" package_flags({
-  "toolchain/family": "$(toolchain_family)",
-  "package/include_dir": "$(include_dir)",
-  "package/lib_dir": "$(lib_dir)",
+  "vcpkg/export_dirs": "include lib",
   "package/posix_link_flags": "-lsqlite3",
   "package/msvc_link_flags": "sqlite3.lib"
 })
 
 fbind { "bin": demo } := call "@std//native" binary({
-  "name": "sqlite-demo",
+  ...toolchain,
+  ...sqlite3,
+  "native/binary/name": "sqlite-demo",
   "brdir": "./build",
-  "toolchain/family": "$(toolchain_family)",
-  "toolchain/os": "$(toolchain_os)",
-  "toolchain/cc": "$(toolchain_cc)",
-  "toolchain/cxx": "$(toolchain_cxx)",
-  "toolchain/linker": "$(toolchain_linker)",
-  "native/binary/c/sources": "./src/main.c",
-  "flags/c": "$(c_flags)",
-  "flags/ld_exe": "$(link_flags)"
+  "native/binary/c/sources": "./src/main.c"
 })

@@ -50,13 +50,28 @@ int vardb_close(struct vardb *v)
 int vardb_set(struct vardb *v, const char *var, const char *value,
 	      struct tup_entry *tent)
 {
-	if(vardb_set2(v, var, strlen(var), value, tent) == NULL)
+	if(vardb_set2_mode(v, var, strlen(var), value, VDB_MERGE_OVERRIDE, tent) == NULL)
 		return -1;
 	return 0;
 }
 
 struct var_entry *vardb_set2(struct vardb *v, const char *var, int varlen,
 			     const char *value, struct tup_entry *tent)
+{
+	return vardb_set2_mode(v, var, varlen, value, VDB_MERGE_OVERRIDE, tent);
+}
+
+int vardb_set_mode(struct vardb *v, const char *var, const char *value,
+		     enum vardb_merge_mode mode, struct tup_entry *tent)
+{
+	if(vardb_set2_mode(v, var, strlen(var), value, mode, tent) == NULL)
+		return -1;
+	return 0;
+}
+
+struct var_entry *vardb_set2_mode(struct vardb *v, const char *var, int varlen,
+				    const char *value, enum vardb_merge_mode mode,
+				    struct tup_entry *tent)
 {
 	struct string_tree *st;
 	struct var_entry *ve;
@@ -82,6 +97,7 @@ struct var_entry *vardb_set2(struct vardb *v, const char *var, int varlen,
 			ve->value = NULL;
 		}
 		ve->tent = tent;
+		ve->merge_mode = mode;
 	} else {
 		ve = malloc(sizeof *ve);
 		if(!ve) {
@@ -114,6 +130,7 @@ struct var_entry *vardb_set2(struct vardb *v, const char *var, int varlen,
 			ve->value = NULL;
 		}
 		ve->tent = tent;
+		ve->merge_mode = mode;
 
 		if(string_tree_insert(&v->root, &ve->var) < 0) {
 			fprintf(stderr, "vardb_set: Error inserting into tree\n");
@@ -130,31 +147,52 @@ struct var_entry *vardb_set2(struct vardb *v, const char *var, int varlen,
 
 int vardb_append(struct vardb *v, const char *var, const char *value)
 {
+	return vardb_merge(v, var, value, VDB_MERGE_APPEND);
+}
+
+int vardb_merge(struct vardb *v, const char *var, const char *value,
+		 enum vardb_merge_mode mode)
+{
 	struct string_tree *st;
 
 	st = string_tree_search(&v->root, var, strlen(var));
-	if(st) {
+	if(st && mode != VDB_MERGE_OVERRIDE) {
+		int oldlen;
 		int vallen;
+		int newlen;
 		char *new;
 		struct var_entry *ve = container_of(st, struct var_entry, var);
 
+		if(!ve->value || ve->value[0] == 0)
+			return vardb_set_mode(v, var, value, mode, NULL);
+		if(!value || value[0] == 0)
+			return vardb_set_mode(v, var, ve->value, mode, NULL);
+
+		oldlen = ve->vallen;
 		vallen = strlen(value);
-		new = malloc(ve->vallen + vallen + 2);
+		newlen = oldlen + vallen + 1;
+		new = malloc(newlen + 1);
 		if(!new) {
 			perror("malloc");
 			return -1;
 		}
-		memcpy(new, ve->value, ve->vallen);
-		new[ve->vallen] = ' ';
-		memcpy(new+ve->vallen+1, value, vallen);
-		new[ve->vallen+vallen+1] = 0;
+		if(mode == VDB_MERGE_PREPEND) {
+			memcpy(new, value, vallen);
+			new[vallen] = ' ';
+			memcpy(new+vallen+1, ve->value, oldlen);
+		} else {
+			memcpy(new, ve->value, oldlen);
+			new[oldlen] = ' ';
+			memcpy(new+oldlen+1, value, vallen);
+		}
+		new[newlen] = 0;
 		free(ve->value);
 		ve->value = new;
-		ve->vallen += vallen + 1;
+		ve->vallen = newlen;
+		ve->merge_mode = mode;
 		return 0;
-	} else {
-		return vardb_set(v, var, value, NULL);
 	}
+	return vardb_set_mode(v, var, value, mode, NULL);
 }
 
 int vardb_copy(struct vardb *v, const char *var, int varlen, struct estring *e)

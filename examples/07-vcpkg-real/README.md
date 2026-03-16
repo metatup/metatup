@@ -19,9 +19,8 @@ Run:
 
 What it shows:
 
-- The standard `@std//vcpkg` helper driving a real manifest install and host triplet selection
-- The standard `@std//toolchains` package selecting a host toolchain on demand
-- The standard `@std//toolchains` package formatting package include/link flags
+- The standard `@std//toolchains` package returning spreadable host toolchain settings
+- The standard `@std//vcpkg` helper returning spreadable install metadata and package flags
 - A pinned `builtin-baseline` in `manifest/vcpkg.json`
 - Auto-exporting installed `include/` and `lib/` prefix directories
 - Building and linking a native binary against the installed `sqlite3` package

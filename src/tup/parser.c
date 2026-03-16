@@ -88,10 +88,16 @@ struct loaded_function_file {
 	struct string_tree st;
 };
 
+struct object_var_entry {
+	struct string_tree var;
+	struct vardb values;
+};
+
 struct tup_func_frame {
 	struct vardb args;
 	struct vardb vars;
 	struct vardb returns;
+	struct string_entries object_vars;
 	struct string_entries bang_root;
 	struct bin_head bin_list;
 	struct tup_func_frame *parent;
@@ -217,6 +223,7 @@ static int line_is_trimmed_close_brace(const char *line, int len);
 static int parse_include_path_literal(const char *text, char **out);
 static int parse_quoted_string(const char **sp, char **out);
 static int parse_simple_fbind_var(const char *text, char **out);
+static int parse_object_var_name(const char **sp, char **out);
 static int parse_materialize_args(struct tupfile *tf, const char *text, char **spec, char **root,
 				  int *root_from_caller_root);
 static struct string_tree *find_bang_rule(struct tupfile *tf, const char *name, int len);
@@ -231,6 +238,9 @@ static int load_function_file(struct tupfile *tf, const char *file, struct tup_f
 			      struct tup_entry **oldtent, int *old_dfd, struct tup_entry **loadedtent);
 static void restore_loaded_function_file(struct tupfile *tf, struct tup_entry *oldtent, int old_dfd);
 static int vardb_clone(struct vardb *dst, struct vardb *src);
+static void free_object_vars(struct string_entries *root);
+static struct vardb *get_object_var(struct tupfile *tf, const char *name);
+static int set_object_var(struct tupfile *tf, const char *name, struct vardb *values);
 static int function_arg_set_reldir(struct tupfile *tf, struct vardb *args);
 static int function_arg_set_brdir(struct vardb *args);
 static int parse_tupbuild(struct tupfile *tf, struct buf *b, const char *filename);
@@ -434,6 +444,7 @@ int parse(struct node *n, struct graph *g, struct timespan *retts, int refactori
 	tf.in_rules_block = 0;
 	tf.function_registry = NULL;
 	tf.func_frame = NULL;
+	RB_INIT(&tf.object_vars);
 	tf.function_rel_dir_override = NULL;
 	tf.function_registry_error = 0;
 	tf.allow_function_includes = 0;
@@ -560,6 +571,7 @@ out_close_dfd:
 out_close_vdb:
 	if(vardb_close(&tf.node_db) < 0)
 		rc = -1;
+	free_object_vars(&tf.object_vars);
 out_server_stop:
 	if(tf.function_registry)
 		free_function_registry(tf.function_registry);
@@ -2799,9 +2811,16 @@ static int set_function_or_lua_var(struct tupfile *tf, const char *var, const ch
 	return luadb_set(var, value);
 }
 
-static int assign_fbind_vars(struct tupfile *tf, struct vardb *bindings, struct vardb *returns)
+static int assign_fbind_vars(struct tupfile *tf, struct vardb *bindings, struct vardb *returns,
+			     const char *object_var)
 {
 	struct string_tree *st;
+	struct vardb object_values = {{0}, 0};
+	int need_object = object_var != NULL;
+	int rc = 0;
+
+	if(need_object && vardb_clone(&object_values, returns) < 0)
+		return -1;
 
 	RB_FOREACH(st, string_entries, &bindings->root) {
 		struct var_entry *binding = container_of(st, struct var_entry, var);
@@ -2810,12 +2829,28 @@ static int assign_fbind_vars(struct tupfile *tf, struct vardb *bindings, struct 
 		ret = vardb_get(returns, binding->var.s, binding->var.len);
 		if(!ret || !ret->value) {
 			fprintf(tf->f, "tup error: fbind expected returned key '%s'.\n", binding->var.s);
-			return -1;
+			rc = -1;
+			goto out;
 		}
-		if(set_function_or_lua_var(tf, binding->value, ret->value) < 0)
-			return -1;
+		if(set_function_or_lua_var(tf, binding->value, ret->value) < 0) {
+			rc = -1;
+			goto out;
+		}
+		if(need_object && binding->merge_mode != VDB_MERGE_INHERIT) {
+			struct var_entry *ove = vardb_get(&object_values, binding->var.s, binding->var.len);
+			if(!ove) {
+				rc = -1;
+				goto out;
+			}
+			ove->merge_mode = binding->merge_mode;
+		}
 	}
-	return 0;
+	if(need_object)
+		rc = set_object_var(tf, object_var, &object_values);
+out:
+	if(need_object)
+		vardb_close(&object_values);
+	return rc;
 }
 
 static int parse_simple_fbind_var(const char *text, char **out)
@@ -2837,12 +2872,77 @@ static int parse_simple_fbind_var(const char *text, char **out)
 	return 0;
 }
 
-static int parse_fbind_map(const char *text, struct vardb *bindings)
+static int parse_object_var_name(const char **sp, char **out)
+{
+	const char *s = *sp;
+	const char *start = s;
+
+	while(*s && *s != ',' && *s != '}' && *s != ':' &&
+	      !isspace((unsigned char)*s))
+		s++;
+	if(s == start)
+		return SYNTAX_ERROR;
+	*out = strndup(start, s - start);
+	if(!*out) {
+		perror("strndup");
+		return -1;
+	}
+	*sp = s;
+	return 0;
+}
+
+static enum vardb_merge_mode parse_merge_mode_prefix(const char **sp, int fbind_mode)
+{
+	const char *s = *sp;
+
+	if(strncmp(s, "prepending", 10) == 0 && isspace((unsigned char)s[10])) {
+		*sp = s + 10;
+		return VDB_MERGE_PREPEND;
+	}
+	if(strncmp(s, "appending", 9) == 0 && isspace((unsigned char)s[9])) {
+		*sp = s + 9;
+		return VDB_MERGE_APPEND;
+	}
+	if(strncmp(s, "overriding", 10) == 0 && isspace((unsigned char)s[10])) {
+		*sp = s + 10;
+		return VDB_MERGE_OVERRIDE;
+	}
+	return fbind_mode ? VDB_MERGE_INHERIT : VDB_MERGE_OVERRIDE;
+}
+
+static int vardb_apply_merge(struct vardb *v, const char *key, const char *value,
+			     enum vardb_merge_mode mode)
+{
+	if(mode == VDB_MERGE_APPEND || mode == VDB_MERGE_PREPEND)
+		return vardb_merge(v, key, value, mode);
+	return vardb_set_mode(v, key, value, mode, NULL);
+}
+
+static int merge_named_object_var(struct tupfile *tf, struct vardb *dst, const char *name)
+{
+	struct string_tree *st;
+	struct vardb *src = get_object_var(tf, name);
+
+	if(!src) {
+		fprintf(tf->f, "tup error: Unknown object variable '%s' in spread.\n", name);
+		return -1;
+	}
+	RB_FOREACH(st, string_entries, &src->root) {
+		struct var_entry *ve = container_of(st, struct var_entry, var);
+		if(vardb_apply_merge(dst, ve->var.s, ve->value ? ve->value : "",
+				     ve->merge_mode) < 0)
+			return -1;
+	}
+	return 0;
+}
+
+static int parse_fbind_map(const char *text, struct vardb *bindings, char **object_var)
 {
 	const char *s = text;
 
 	if(vardb_init(bindings) < 0)
 		return -1;
+	*object_var = NULL;
 	while(isspace(*s))
 		s++;
 	if(*s != '{')
@@ -2851,43 +2951,53 @@ static int parse_fbind_map(const char *text, struct vardb *bindings)
 	for(;;) {
 		char *key = NULL;
 		char *var = NULL;
-		const char *start;
-		const char *end;
-		int len;
+		enum vardb_merge_mode mode;
 
 		while(isspace(*s) || *s == ',')
 			s++;
 		if(*s == '}')
 			break;
+		mode = parse_merge_mode_prefix(&s, 1);
+		while(isspace(*s))
+			s++;
 		if(parse_quoted_string(&s, &key) < 0)
 			return SYNTAX_ERROR;
 		while(isspace(*s))
 			s++;
-		if(*s != ':') {
-			free(key);
-			return SYNTAX_ERROR;
-		}
-		s++;
-		while(isspace(*s))
+		if(*s == ':') {
+			const char *start;
+			const char *end;
+			int len;
+
 			s++;
-		start = s;
-		while(*s && *s != ',' && *s != '}')
-			s++;
-		end = s;
-		while(end > start && isspace(end[-1]))
-			end--;
-		len = end - start;
-		if(len <= 0) {
-			free(key);
-			return SYNTAX_ERROR;
+			while(isspace(*s))
+				s++;
+			start = s;
+			while(*s && *s != ',' && *s != '}')
+				s++;
+			end = s;
+			while(end > start && isspace((unsigned char)end[-1]))
+				end--;
+			len = end - start;
+			if(len <= 0) {
+				free(key);
+				return SYNTAX_ERROR;
+			}
+			var = strndup(start, len);
+			if(!var) {
+				perror("strndup");
+				free(key);
+				return -1;
+			}
+		} else {
+			var = strdup(key);
+			if(!var) {
+				perror("strdup");
+				free(key);
+				return -1;
+			}
 		}
-		var = strndup(start, len);
-		if(!var) {
-			perror("strndup");
-			free(key);
-			return -1;
-		}
-		if(vardb_set(bindings, key, var, NULL) < 0) {
+		if(vardb_set_mode(bindings, key, var, mode, NULL) < 0) {
 			free(key);
 			free(var);
 			return -1;
@@ -2908,6 +3018,15 @@ static int parse_fbind_map(const char *text, struct vardb *bindings)
 	s++;
 	while(isspace(*s))
 		s++;
+	if(*s == ':') {
+		s++;
+		while(isspace(*s))
+			s++;
+		if(parse_object_var_name(&s, object_var) < 0)
+			return SYNTAX_ERROR;
+		while(isspace(*s))
+			s++;
+	}
 	return *s == 0 ? 0 : SYNTAX_ERROR;
 }
 
@@ -2995,8 +3114,77 @@ static int vardb_clone(struct vardb *dst, struct vardb *src)
 		return -1;
 	RB_FOREACH(st, string_entries, &src->root) {
 		struct var_entry *ve = container_of(st, struct var_entry, var);
-		if(vardb_set(dst, ve->var.s, ve->value ? ve->value : "", ve->tent) < 0)
+		if(vardb_set_mode(dst, ve->var.s, ve->value ? ve->value : "",
+				 ve->merge_mode, ve->tent) < 0)
 			return -1;
+	}
+	return 0;
+}
+
+static void free_object_vars(struct string_entries *root)
+{
+	struct string_tree *st;
+
+	while((st = RB_ROOT(root)) != NULL) {
+		struct object_var_entry *ove = container_of(st, struct object_var_entry, var);
+		string_tree_rm(root, st);
+		vardb_close(&ove->values);
+		free(ove->var.s);
+		free(ove);
+	}
+}
+
+static struct vardb *get_object_var(struct tupfile *tf, const char *name)
+{
+	struct string_tree *st;
+	struct string_entries *root;
+
+	root = tf->func_frame ? &tf->func_frame->object_vars : &tf->object_vars;
+	st = string_tree_search(root, name, strlen(name));
+	if(!st)
+		return NULL;
+	return &container_of(st, struct object_var_entry, var)->values;
+}
+
+static int set_object_var(struct tupfile *tf, const char *name, struct vardb *values)
+{
+	struct string_tree *st;
+	struct object_var_entry *ove;
+	struct string_entries *root;
+
+	root = tf->func_frame ? &tf->func_frame->object_vars : &tf->object_vars;
+	st = string_tree_search(root, name, strlen(name));
+	if(st) {
+		ove = container_of(st, struct object_var_entry, var);
+		vardb_close(&ove->values);
+		if(vardb_clone(&ove->values, values) < 0)
+			return -1;
+		return 0;
+	}
+
+	ove = malloc(sizeof *ove);
+	if(!ove) {
+		perror("malloc");
+		return -1;
+	}
+	ove->var.len = strlen(name);
+	ove->var.s = strdup(name);
+	if(!ove->var.s) {
+		perror("strdup");
+		free(ove);
+		return -1;
+	}
+	if(vardb_clone(&ove->values, values) < 0) {
+		free(ove->var.s);
+		free(ove);
+		return -1;
+	}
+	if(string_tree_insert(root, &ove->var) < 0) {
+		fprintf(stderr, "object var insert: Error inserting into tree\n");
+		vardb_close(&ove->values);
+		free(ove->var.s);
+		free(ove);
+		return -1;
 	}
 	return 0;
 }
@@ -4683,6 +4871,7 @@ static int parse_arg_map(struct tupfile *tf, const char *text, struct vardb *arg
 		char *key = NULL;
 		char *val = NULL;
 		char *evalval;
+		enum vardb_merge_mode mode;
 
 		while(isspace(*s) || *s == ',')
 			s++;
@@ -4692,13 +4881,39 @@ static int parse_arg_map(struct tupfile *tf, const char *text, struct vardb *arg
 			fprintf(tf->f, "tup error: Nested function calls must begin their argument map with '...'.\n");
 			return -1;
 		}
-		if(allow_spread && strncmp(s, "...", 3) == 0) {
-			if(tf->func_frame && merge_arg_frame(args, &tf->func_frame->args) < 0)
-				return -1;
+		if(strncmp(s, "...", 3) == 0) {
 			s += 3;
+			if(*s == 0 || *s == ',' || *s == '}') {
+				if(!allow_spread) {
+					fprintf(tf->f, "tup error: Bare '...' spread is only valid in function call argument maps.\n");
+					return -1;
+				}
+				if(tf->func_frame && merge_arg_frame(args, &tf->func_frame->args) < 0)
+					return -1;
+			} else {
+				char *spread_name = NULL;
+
+				if(parse_object_var_name(&s, &spread_name) < 0)
+					return SYNTAX_ERROR;
+				if(merge_named_object_var(tf, args, spread_name) < 0) {
+					free(spread_name);
+					return -1;
+				}
+				free(spread_name);
+			}
 			first_entry = 0;
+			while(isspace(*s))
+				s++;
+			if(*s == '}')
+				break;
+			if(*s != ',')
+				return SYNTAX_ERROR;
+			s++;
 			continue;
 		}
+		mode = parse_merge_mode_prefix(&s, 0);
+		while(isspace(*s))
+			s++;
 		if(parse_quoted_string(&s, &key) < 0)
 			return SYNTAX_ERROR;
 		while(isspace(*s))
@@ -4734,7 +4949,7 @@ static int parse_arg_map(struct tupfile *tf, const char *text, struct vardb *arg
 			free(val);
 			return -1;
 		}
-		if(vardb_set(args, key, evalval, NULL) < 0) {
+		if(vardb_apply_merge(args, key, evalval, mode) < 0) {
 			free(key);
 			free(evalval);
 			free(val);
@@ -4795,6 +5010,7 @@ static int execute_function(struct tupfile *tf, struct tup_function *fn, struct 
 		vardb_close(&frame.args);
 		return -1;
 	}
+	RB_INIT(&frame.object_vars);
 	RB_INIT(&frame.bang_root);
 	LIST_INIT(&frame.bin_list);
 	frame.parent = tf->func_frame;
@@ -4822,6 +5038,7 @@ static int execute_function(struct tupfile *tf, struct tup_function *fn, struct 
 	}
 	free_bang_tree(&frame.bang_root);
 	bin_list_del(&frame.bin_list);
+	free_object_vars(&frame.object_vars);
 	vardb_close(&frame.returns);
 	vardb_close(&frame.vars);
 	vardb_close(&frame.args);
@@ -5268,6 +5485,7 @@ static int parse_fbind(struct tupfile *tf, char *line, int lno)
 	char *invoke;
 	struct vardb bindings = {{0}, 0};
 	struct vardb returns = {{0}, 0};
+	char *object_var = NULL;
 	int rc;
 	int invoke_rc;
 	int inherit_reldir;
@@ -5379,13 +5597,15 @@ out_materialize:
 		return invoke_rc;
 	}
 
-	rc = parse_fbind_map(line, &bindings);
+	rc = parse_fbind_map(line, &bindings, &object_var);
 	if(rc < 0) {
 		vardb_close(&bindings);
+		free(object_var);
 		return rc;
 	}
 	if(vardb_init(&returns) < 0) {
 		vardb_close(&bindings);
+		free(object_var);
 		return -1;
 	}
 
@@ -5419,6 +5639,7 @@ out_materialize:
 			if(invoke_rc < 0) {
 				vardb_close(&returns);
 				vardb_close(&bindings);
+				free(object_var);
 				return invoke_rc;
 			}
 			invoke = orig + (tmp - orig);
@@ -5484,10 +5705,11 @@ out_invoke:
 		invoke_rc = -1;
 	}
 	if(invoke_rc >= 0)
-		invoke_rc = assign_fbind_vars(tf, &bindings, &returns);
+		invoke_rc = assign_fbind_vars(tf, &bindings, &returns, object_var);
 
 	vardb_close(&returns);
 	vardb_close(&bindings);
+	free(object_var);
 	if(invoke_rc < 0)
 		fprintf(tf->f, "tup error: Error invoking function on line %i.\n", lno);
 	return invoke_rc;

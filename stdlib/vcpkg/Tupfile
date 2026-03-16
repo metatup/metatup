@@ -54,31 +54,45 @@ function host_triplet {
 function install_host_manifest {
   bind windows_linkage := "vcpkg/windows/linkage" || static
 
-  fbind { "triplet": triplet } := call host_triplet({
+  fbind { "triplet": triplet }: triplet_vals := call host_triplet({
+    ...,
     "vcpkg/windows/linkage": "$(windows_linkage)"
   })
 
-  fbind {
-    "prefix": prefix,
-    "include_dir": include_dir,
-    "lib_dir": lib_dir,
-    "bin_dir": bin_dir,
-    "debug_lib_dir": debug_lib_dir,
-    "debug_bin_dir": debug_bin_dir,
-    "stamp": stamp
-  } := call install_manifest({
+  fbind { }: install_vals := call install_manifest({
     ...,
     "vcpkg/triplet": "$(triplet)"
   })
 
   return {
-    "triplet": "$(triplet)",
-    "prefix": "$(prefix)",
-    "include_dir": "$(include_dir)",
-    "lib_dir": "$(lib_dir)",
-    "bin_dir": "$(bin_dir)",
-    "debug_lib_dir": "$(debug_lib_dir)",
-    "debug_bin_dir": "$(debug_bin_dir)",
-    "stamp": "$(stamp)"
+    ...triplet_vals,
+    ...install_vals
+  }
+}
+
+function install_host_package {
+  bind family := "toolchain/family" || gcc
+  bind posix_link_flags := "package/posix_link_flags" || ""
+  bind msvc_link_flags := "package/msvc_link_flags" || ""
+
+  fbind {
+    "include_dir": include_dir,
+    "lib_dir": lib_dir
+  }: pkg := call install_host_manifest({
+    ...,
+  })
+
+  fbind { }: flags := call "@std//toolchains" package_flags({
+    ...,
+    "toolchain/family": "$(family)",
+    "package/include_dir": "$(include_dir)",
+    "package/lib_dir": "$(lib_dir)",
+    "package/posix_link_flags": "$(posix_link_flags)",
+    "package/msvc_link_flags": "$(msvc_link_flags)"
+  })
+
+  return {
+    ...pkg,
+    ...flags
   }
 }

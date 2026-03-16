@@ -10,83 +10,72 @@
 . ./tup.sh
 
 cat > Tupfile << 'HERE'
-fbind {
-  "family": gcc_family,
-  "os": gcc_os,
-  "cc": gcc_cc,
-  "cxx": gcc_cxx,
-  "linker": gcc_linker,
-  "ar": gcc_ar
-} := call "@std//toolchains" gcc({
+fbind { }: gcc_vals := call "@std//toolchains" gcc({
   "toolchain/os": "linux"
 })
 
-fbind {
-  "family": clang_family,
-  "os": clang_os,
-  "cc": clang_cc,
-  "cxx": clang_cxx,
-  "linker": clang_linker,
-  "ar": clang_ar
-} := call "@std//toolchains" clang({
+fbind { }: clang_vals := call "@std//toolchains" clang({
   "toolchain/os": "macos"
 })
 
-fbind {
-  "family": msvc_family,
-  "os": msvc_os,
-  "cc": msvc_cc,
-  "cxx": msvc_cxx,
-  "linker": msvc_linker,
-  "ar": msvc_ar
-} := call "@std//toolchains" msvc({})
+fbind { }: msvc_vals := call "@std//toolchains" msvc({})
 
-fbind {
-  "family": host_family,
-  "os": host_os,
-  "cc": host_cc,
-  "cxx": host_cxx,
-  "linker": host_linker,
-  "ar": host_ar
-} := call "@std//toolchains" host({})
+fbind { }: host_vals := call "@std//toolchains" host({})
 
-fbind {
-  "c_flags": posix_c_flags,
-  "link_flags": posix_link_flags
-} := call "@std//toolchains" package_flags({
+fbind { }: posix_pkg := call "@std//toolchains" package_flags({
   "toolchain/family": "gcc",
   "package/include_dir": "/deps/include",
   "package/lib_dir": "/deps/lib",
   "package/posix_link_flags": "-lsqlite3"
 })
 
-fbind {
-  "c_flags": msvc_pkg_c_flags,
-  "link_flags": msvc_pkg_link_flags
-} := call "@std//toolchains" package_flags({
+fbind { }: msvc_pkg := call "@std//toolchains" package_flags({
   "toolchain/family": "msvc",
   "package/include_dir": "C:/deps/include",
   "package/lib_dir": "C:/deps/lib",
   "package/msvc_link_flags": "sqlite3.lib"
 })
 
-: |> echo $(gcc_family) $(gcc_os) $(gcc_cc) $(gcc_cxx) $(gcc_linker) $(gcc_ar) |> gcc.txt
-: |> echo $(clang_family) $(clang_os) $(clang_cc) $(clang_cxx) $(clang_linker) $(clang_ar) |> clang.txt
-: |> echo $(msvc_family) $(msvc_os) $(msvc_cc) $(msvc_cxx) $(msvc_linker) $(msvc_ar) |> msvc.txt
-: |> echo $(host_family) $(host_os) $(host_cc) $(host_cxx) $(host_linker) $(host_ar) |> host.txt
-: |> echo $(posix_c_flags) $(posix_link_flags) |> pkg-posix.txt
-: |> echo $(msvc_pkg_c_flags) $(msvc_pkg_link_flags) |> pkg-msvc.txt
+call "@std//native" binary({
+  ...gcc_vals,
+  ...posix_pkg,
+  "native/binary/name": "gccapp",
+  "native/binary/c/sources": "gcc.c"
+})
+
+call "@std//native" binary({
+  ...clang_vals,
+  ...posix_pkg,
+  "native/binary/name": "clangapp",
+  "native/binary/c/sources": "clang.c"
+})
+
+call "@std//native" binary({
+  ...msvc_vals,
+  ...msvc_pkg,
+  "native/binary/name": "msvcapp",
+  "native/binary/c/sources": "msvc.c"
+})
+
+call "@std//native" binary({
+  ...host_vals,
+  "native/binary/name": "hostapp",
+  "native/binary/c/sources": "host.c"
+})
 HERE
 
+touch gcc.c clang.c msvc.c host.c
 parse
-tup_object_exist . 'echo gcc linux gcc g++ g++ ar'
-tup_object_exist . 'echo clang macos clang clang++ clang++ ar'
-tup_object_exist . 'echo msvc windows cl cl link lib'
-tup_object_exist . 'echo -I/deps/include -L/deps/lib -lsqlite3'
-tup_object_exist . 'echo /IC:/deps/include /LIBPATH:C:/deps/lib sqlite3.lib'
+tup_object_exist . 'gcc  -I/deps/include -c gcc.c -o ./gccapp.objs/c/gcc.o'
+tup_object_exist . 'g++  -L/deps/lib -lsqlite3 ./gccapp.objs/c/gcc.o -o ./gccapp'
+tup_object_exist . 'clang  -I/deps/include -c clang.c -o ./clangapp.objs/c/clang.o'
+tup_object_exist . 'clang++  -L/deps/lib -lsqlite3 ./clangapp.objs/c/clang.o -o ./clangapp'
+tup_object_exist . 'cl /nologo  /IC:/deps/include /c msvc.c /Fo./msvcapp.objs/c/msvc.obj'
+tup_object_exist . 'link /nologo /LIBPATH:C:/deps/lib sqlite3.lib /OUT:./msvcapp.exe ./msvcapp.objs/c/msvc.obj'
 
 if uname -s | grep Linux > /dev/null; then
-	tup_object_exist . 'echo gcc linux gcc g++ g++ ar'
+	tup_object_exist . 'gcc   -c host.c -o ./hostapp.objs/c/host.o'
+	tup_object_exist . 'g++   ./hostapp.objs/c/host.o -o ./hostapp'
 fi
 
 eotup
