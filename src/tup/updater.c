@@ -2095,9 +2095,10 @@ static int create_work(struct graph *g, struct node *n)
 			int ignored = tupignore_matches_tent(n->tent);
 			if(ignored < 0)
 				rc = -1;
-			else if(ignored)
+			else if(ignored) {
+				skip_result(n->tent);
 				rc = 0;
-			else if(n->already_used) {
+			} else if(n->already_used) {
 				rc = 0;
 			} else {
 				rc = parse(n, g, NULL, refactoring, 1, full_deps);

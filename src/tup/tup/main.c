@@ -85,7 +85,6 @@ static int tupid(int argc, char **argv);
 static int inputs(int argc, char **argv);
 static int graph_cb(void *arg, struct tup_entry *tent);
 static int graph(int argc, char **argv);
-int tup_compiledb(int argc, char **argv);
 static int commandline(int argc, char **argv);
 static int write_compile_db_files(void);
 /* Testing commands */
