@@ -2,10 +2,12 @@ call app({})
 
 function app {
   fbind { "tool_path": tool_path } := call "@tools//pkg" build_tool({
+    ...,
     "brdir": "./build/tool"
   })
 
   spawn "@tools//pkg" write_notice({
+    ...,
     "message": "spawned through @tools"
   })
 

@@ -1,0 +1,3 @@
+beta
+alpha
+/home/nickolay/Projects/metatup/examples/01-get-this-done/build/notes.txt

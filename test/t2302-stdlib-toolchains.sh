@@ -18,9 +18,9 @@ fbind { }: clang_vals := call "@std//toolchains" clang({
   "toolchain/os": "macos"
 })
 
-fbind { }: msvc_vals := call "@std//toolchains" msvc({})
+fbind { }: msvc_vals := call "@std//toolchains" msvc({ ..., })
 
-fbind { }: host_vals := call "@std//toolchains" host({})
+fbind { }: host_vals := call "@std//toolchains" host({ ..., })
 
 fbind { }: posix_pkg := call "@std//toolchains" package_flags({
   "package/include_dir": "/deps/include",

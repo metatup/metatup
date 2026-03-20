@@ -6,15 +6,17 @@ function app {
     "out_abs": merged_abs,
     "bundle": bundle
   } := call "//lib" merge({
+    ...,
     "name": "notes",
     "inputs": "$(globs src/*.txt)"
   })
 
   spawn "//lib" emit_notice({
+    ...,
     "message": "spawned helper"
   })
 
   : $(merged) notice.txt |> cat %f > %o |> summary.txt
   : $(bundle) |> cat %f > %o |> bundle.txt
-  : |> printf '%s\n' $(merged_abs) > %o |> merged-abs.txt
+  : |> printf '%%s\n' $(merged_abs) > %o |> merged-abs.txt
 }

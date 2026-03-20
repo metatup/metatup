@@ -5,6 +5,7 @@ fbind {
   "bin_dir": bin_dir,
   "stamp": stamp
 } := call "@std//vcpkg" install_manifest({
+  ...,
   "vcpkg/exe": "./fakevcpkg/vcpkg",
   "vcpkg/manifest_dir": "./manifest",
   "vcpkg/triplet": "x64-linux",

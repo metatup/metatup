@@ -3,7 +3,7 @@ function build_app {
   bind cflags := "cflags" || "-O2"
   bind extra_message := "extra_message" || "release-profile"
 
-  : |> printf '#define EXTRA_MESSAGE "%s"\n' "$(extra_message)" > %o |> $(brdir)/generated/config.h
+  : |> printf '#define EXTRA_MESSAGE "%%s"\n' "$(extra_message)" > %o |> $(brdir)/generated/config.h
   : foreach src/*.c | $(brdir)/generated/config.h |> ^j^ gcc -I$(brdir)/generated -c %f -o %o $(cflags) |> $(brdir)/%B.o {objects}
   : $(groups {objects}) |> ^ LINK %o^ gcc %f -o %o |> $(brdir)/app
 }

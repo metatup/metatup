@@ -1,6 +1,6 @@
 function host {
   ifeq (@(TUP_PLATFORM),win32)
-    fbind { }: vals := call msvc({})
+    fbind { }: vals := call msvc({ ..., })
   endif
 
   ifeq (@(TUP_PLATFORM),macosx)
@@ -60,11 +60,11 @@ function msvc {
 }
 
 function package_flags {
-  bind family := "toolchain/family" || ""
-  bind include_dir := "package/include_dir" || ""
-  bind lib_dir := "package/lib_dir" || ""
-  bind posix_link_flags := "package/posix_link_flags" || ""
-  bind msvc_link_flags := "package/msvc_link_flags" || ""
+  bind family := "toolchain/family" || 
+  bind include_dir := "package/include_dir" || 
+  bind lib_dir := "package/lib_dir" || 
+  bind posix_link_flags := "package/posix_link_flags" || 
+  bind msvc_link_flags := "package/msvc_link_flags" || 
   FAMILY = $(family)
   INCLUDE_DIR = $(include_dir)
   LIB_DIR = $(lib_dir)

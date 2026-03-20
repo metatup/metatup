@@ -1,15 +1,15 @@
 function project {
   bind srcdir := "external/srcdir"
   bind inputs := "external/inputs"
-  bind configure_script := "external/configure_script" || ""
-  bind build_script := "external/build_script" || ""
-  bind install_script := "external/install_script" || ""
-  bind configure_cmd := "external/configure_cmd" || ""
-  bind build_cmd := "external/build_cmd" || ""
+  bind configure_script := "external/configure_script" || 
+  bind build_script := "external/build_script" || 
+  bind install_script := "external/install_script" || 
+  bind configure_cmd := "external/configure_cmd" || 
+  bind build_cmd := "external/build_cmd" || 
   bind install_cmd := "external/install_cmd"
-  bind export_files := "external/export_files" || ""
+  bind export_files := "external/export_files" || 
   bind outputs := "external/outputs"
-  bind helper_script := "external/helper_script" || "$(TUP_ROOT)/.metatup/repos/std/external/run_project.sh"
+  bind helper_script := "external/helper_script" || $(TUP_ROOT)/.metatup/repos/std/external/run_project.sh
   bind brdir := "brdir" || .
 
   PREFIX = $(brdir)/external_prefix

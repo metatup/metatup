@@ -1,10 +1,10 @@
 function merge {
   bind name := "name"
   bind inputs := "inputs"
-  bind brdir := "brdir" || "./build"
+  bind brdir := "brdir" || build
 
   : $(inputs) |> cat %f > %o |> $(brdir)/$(name).txt {out}
-  : |> printf '%s\n' $(groups {out}) > %o |> $(brdir)/$(name).group.txt
+  : |> printf '%%s\n' $(groups {out}) > %o |> $(brdir)/$(name).group.txt
 
   return {
     "out": "$(groups {out})",
@@ -15,5 +15,5 @@ function merge {
 
 function emit_notice {
   bind message := "message"
-  : |> printf '%s\n' "$(message)" > %o |> notice.txt
+  : |> printf '%%s\n' "$(message)" > %o |> notice.txt
 }

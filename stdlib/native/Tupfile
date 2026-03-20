@@ -6,7 +6,7 @@ function binary {
     "toolchain/cc": default_cc,
     "toolchain/cxx": default_cxx,
     "toolchain/linker": default_linker
-  } := call "@std//toolchains" host({})
+  } := call "@std//toolchains" host({ ..., })
 
   bind name := "native/binary/name"
   bind c_sources := "native/binary/c/sources"
@@ -57,7 +57,7 @@ function shared_library {
     "toolchain/cc": default_cc,
     "toolchain/cxx": default_cxx,
     "toolchain/linker": default_linker
-  } := call "@std//toolchains" host({})
+  } := call "@std//toolchains" host({ ..., })
 
   bind name := "native/shared_library/name"
   bind c_sources := "native/shared_library/c/sources"
@@ -116,7 +116,7 @@ function static_library {
     "toolchain/cc": default_cc,
     "toolchain/cxx": default_cxx,
     "toolchain/ar": default_ar
-  } := call "@std//toolchains" host({})
+  } := call "@std//toolchains" host({ ..., })
 
   bind name := "native/static_library/name"
   bind c_sources := "native/static_library/c/sources"

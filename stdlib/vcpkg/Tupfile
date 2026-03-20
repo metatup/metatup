@@ -1,12 +1,12 @@
 function install_manifest {
   bind exe := "vcpkg/exe" || vcpkg
   bind manifest_dir := "vcpkg/manifest_dir" || .
-  bind manifest_inputs := "vcpkg/manifest_inputs" || "$(manifest_dir)/vcpkg.json"
+  bind manifest_inputs := "vcpkg/manifest_inputs" || $(manifest_dir)/vcpkg.json
   bind triplet := "vcpkg/triplet"
-  bind export_dirs := "vcpkg/export_dirs" || ""
-  bind export_files := "vcpkg/export_files" || ""
+  bind export_dirs := "vcpkg/export_dirs" || 
+  bind export_files := "vcpkg/export_files" || 
   bind outputs := "vcpkg/outputs"
-  bind helper_script := "vcpkg/helper_script" || "$(TUP_ROOT)/.metatup/repos/std/vcpkg/install_manifest.sh"
+  bind helper_script := "vcpkg/helper_script" || $(TUP_ROOT)/.metatup/repos/std/vcpkg/install_manifest.sh
   bind brdir := "brdir" || .
 
   PREFIX = $(brdir)/vcpkg_installed/$(triplet)
@@ -71,7 +71,7 @@ function install_host_manifest {
 }
 
 function install_host_package {
-  bind export_dirs := "vcpkg/export_dirs" || "include lib"
+  bind export_dirs := "vcpkg/export_dirs" || include lib
 
   fbind {
     "prefix": prefix,

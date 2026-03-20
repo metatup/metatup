@@ -8,5 +8,5 @@ function build_tool {
 
 function write_notice {
   bind message := "message"
-  : |> printf '%s\n' "$(message)" > %o |> notice.txt
+  : |> printf '%%s\n' "$(message)" > %o |> notice.txt
 }

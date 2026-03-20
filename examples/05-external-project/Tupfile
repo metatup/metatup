@@ -4,6 +4,7 @@ fbind {
   "bin_dir": bin_dir,
   "stamp": stamp
 } := call "@std//external" project({
+  ...,
   "brdir": "./build/ext",
   "external/srcdir": "./proj",
   "external/inputs": "./proj/meta/name.txt ./proj/meta/version.txt ./proj/configure.sh ./proj/build.sh ./proj/install.sh",

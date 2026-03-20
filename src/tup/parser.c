@@ -5403,7 +5403,18 @@ static int invoke_function_path(struct tupfile *tf, const char *path, const char
 		goto out;
 	}
 	fn = container_of(st, struct tup_function, st);
-	rc = execute_function(tf, fn, args, ctx, fname, inherit_reldir, returns);
+	if(!inherit_reldir) {
+		struct tup_entry *func_tent = tf->curtent;
+		int func_dfd = tf->cur_dfd;
+
+		tf->curtent = oldtent;
+		tf->cur_dfd = old_dfd;
+		rc = execute_function(tf, fn, args, ctx, fname, inherit_reldir, returns);
+		tf->curtent = func_tent;
+		tf->cur_dfd = func_dfd;
+	} else {
+		rc = execute_function(tf, fn, args, ctx, fname, inherit_reldir, returns);
+	}
 out:
 	restore_loaded_function_file(tf, oldtent, old_dfd);
 	tf->function_registry = old_registry;
@@ -5969,7 +5980,8 @@ static int tupbuild_resolve_builddir(struct tupfile *tf, const char *builddir, s
 	if(!pl)
 		return -1;
 	TAILQ_INSERT_TAIL(&plist, pl, list);
-	if(path_list_fill_dt_pel(tf, pl, tf->tent->tnode.tupid, 1) < 0)
+	tupid_t base = pl->tent_relative ? tf->curtent->tnode.tupid : tf->tent->tnode.tupid;
+	if(path_list_fill_dt_pel(tf, pl, base, 1) < 0)
 		goto out;
 	if(tup_entry_add(pl->dt, tent) < 0)
 		goto out;
@@ -6993,6 +7005,7 @@ static int next_path(struct tupfile *tf, const char *p, char *dest)
 	int espace = 0;
 	int quoted = 0;
 	int backtick = 0;
+	int paren_depth = 0;
 	const char *s = p;
 
 	for(; *s; s++) {
@@ -7012,7 +7025,25 @@ static int next_path(struct tupfile *tf, const char *p, char *dest)
 			*dest = *s;
 			dest++;
 			continue;
-		} else if(isspace(*s) && !quoted && !backtick) {
+		} else if((*s == '$' || *s == '@' || *s == '&') && s[1] == '(' && !quoted && !backtick) {
+			*dest = *s;
+			dest++;
+			s++;
+			*dest = *s;
+			dest++;
+			paren_depth++;
+			continue;
+		} else if(*s == '(' && paren_depth > 0 && !quoted && !backtick) {
+			*dest = *s;
+			dest++;
+			paren_depth++;
+			continue;
+		} else if(*s == ')' && paren_depth > 0 && !quoted && !backtick) {
+			*dest = *s;
+			dest++;
+			paren_depth--;
+			continue;
+		} else if(isspace(*s) && !quoted && !backtick && paren_depth == 0) {
 			*dest = 0;
 			return s - p;
 		} else {
@@ -7920,8 +7951,9 @@ static int do_rule_outputs(struct tupfile *tf, struct path_list_head *oplist, st
 		struct tup_entry *dest_tent;
 		struct tup_entry *tmp_tent;
 		struct name_list_entry *onle;
+		tupid_t base = pl->tent_relative ? tf->curtent->tnode.tupid : tf->tent->tnode.tupid;
 
-		if(path_list_fill_dt_pel(tf, pl, tf->tent->tnode.tupid, 1) < 0)
+		if(path_list_fill_dt_pel(tf, pl, base, 1) < 0)
 			return -1;
 		if(build_ctx_strict_check(tf, pl) < 0)
 			return -1;
@@ -8357,7 +8389,7 @@ static int do_rule(struct tupfile *tf, struct rule *r, struct name_list *nl,
 	 * node. Note we require a case-sensitive comparison, since we want to
 	 * re-run the command if the case of a string or filename has changed.
 	 */
-	if(tup_db_select_tent(tf->tent, cmd, &tmptent) < 0)
+	if(tup_db_select_tent(tf->curtent, cmd, &tmptent) < 0)
 		return -1;
 	if(tmptent && strcmp(tmptent->name.s, cmd) == 0) {
 		cmdtent = tmptent;
@@ -8377,7 +8409,7 @@ static int do_rule(struct tupfile *tf, struct rule *r, struct name_list *nl,
 				free_parsed_command_flags(&pcf);
 				return -1;
 			}
-			cmdid = create_command_file(tf->tent->tnode.tupid, cmd, real_display, real_displaylen, pcf.flags, pcf.flagslen);
+			cmdid = create_command_file(tf->curtent->tnode.tupid, cmd, real_display, real_displaylen, pcf.flags, pcf.flagslen);
 			if(tup_entry_add(cmdid, &cmdtent) < 0)
 				return -1;
 		} else {
@@ -8387,7 +8419,7 @@ static int do_rule(struct tupfile *tf, struct rule *r, struct name_list *nl,
 				fprintf(tf->f, "New: '%s'\n", cmd);
 				return -1;
 			}
-			if(tup_db_set_name(cmdtent->tnode.tupid, cmd, tf->tent->tnode.tupid) < 0)
+			if(tup_db_set_name(cmdtent->tnode.tupid, cmd, tf->curtent->tnode.tupid) < 0)
 				return -1;
 
 			/* Since we changed the name, we have to run the
